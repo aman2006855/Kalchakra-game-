@@ -25,6 +25,18 @@ baaki folders builders ki requirement ke liye maujood hain):
 └── README.md
 ```
 
+## GitHub Actions se APK banana
+
+Har push to `main` pe workflow (`.github/workflows/apk-release.yml`) automatically
+release APK build karta hai:
+
+1. GitHub repo → **Actions** tab → latest "Build Release APK" run
+2. Run page ke **Artifacts** section se `kaal-chakra-release-apk` download karo
+3. Version tag push karo (`v1.0.1` jaisa) to APK **Releases** section mein bhi attach ho jata hai
+
+Signing: repo secrets (`KEYSTORE_BASE64`, `STORE_PASSWORD`, `KEY_PASSWORD`, `KEY_ALIAS`)
+set hon to release keystore se sign hota hai, warna debug-signing fallback.
+
 ## Verification
 
 ```bash

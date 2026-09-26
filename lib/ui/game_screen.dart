@@ -10,6 +10,11 @@ import '../game/engine.dart';
 import '../game/realms.dart';
 import '../game/renderer.dart';
 
+/// Repaint signal driven by the game loop.
+class _Repaint extends ChangeNotifier {
+  void tick() => notifyListeners();
+}
+
 /// Live game view: simulation loop, input layer, HUD and overlays.
 class GameScreen extends StatefulWidget {
   const GameScreen({
@@ -35,25 +40,31 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen>
     with SingleTickerProviderStateMixin {
+
+  /// Drives the simulation (Ticker) and the repaints (ChangeNotifier).
   late final Ticker _ticker;
+  final _Repaint _repaint = _Repaint();
   Duration _lastTick = Duration.zero;
   Offset? _stickOrigin;
   Offset? _stickPosition;
   int _pointerId = -1;
   bool _finishHandled = false;
   bool _droneStarted = false;
+  late GamePhase _lastPhase;
 
   @override
   void initState() {
     super.initState();
     widget.engine.aimAssist = widget.aimAssist;
     widget.engine.onEvent = _handleEvent;
+    _lastPhase = widget.engine.phase;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
     _ticker.dispose();
+    _repaint.dispose();
     widget.engine.onEvent = null;
     widget.engine.releaseAllInput();
     unawaited(widget.audio.stopDrone());
@@ -61,11 +72,23 @@ class _GameScreenState extends State<GameScreen>
   }
 
   void _onTick(Duration elapsed) {
+    // The ticker's elapsed time is used (not a Stopwatch) so the simulation
+    // also follows the fake clock while widget tests are pumping frames.
     final delta = (_lastTick == Duration.zero)
         ? 0.0
         : (elapsed - _lastTick).inMicroseconds / 1000000.0;
     _lastTick = elapsed;
     widget.engine.update(delta);
+
+    // The engine changes phase from inside the ticker (realm intro -> play,
+    // hit -> game over), so the widget tree has to be told about it.
+    if (widget.engine.phase != _lastPhase) {
+      _lastPhase = widget.engine.phase;
+      if (mounted) setState(() {});
+    }
+
+    // Repaint the world, HUD and stick from the live engine state.
+    if (mounted) _repaint.tick();
 
     if (widget.engine.phase == GamePhase.playing && !_droneStarted) {
       _droneStarted = true;
@@ -112,11 +135,18 @@ class _GameScreenState extends State<GameScreen>
   }
 
   void _onPointerDown(PointerDownEvent event) {
-    if (widget.engine.phase != GamePhase.playing) return;
+    // Accept the grab during the realm intro too, otherwise the first drag of a
+    // run looks like it is being ignored.
+    if (widget.engine.phase != GamePhase.playing &&
+        widget.engine.phase != GamePhase.realmTransition) {
+      return;
+    }
     if (_pointerId != -1) return;
     _pointerId = event.pointer;
-    _stickOrigin = event.localPosition;
-    _stickPosition = event.localPosition;
+    setState(() {
+      _stickOrigin = event.localPosition;
+      _stickPosition = event.localPosition;
+    });
     widget.engine.setStick(0, 0);
   }
 
@@ -143,8 +173,10 @@ class _GameScreenState extends State<GameScreen>
   void _onPointerUp(PointerEvent event) {
     if (event.pointer != _pointerId) return;
     _pointerId = -1;
-    _stickOrigin = null;
-    _stickPosition = null;
+    setState(() {
+      _stickOrigin = null;
+      _stickPosition = null;
+    });
     widget.engine.setStick(0, 0);
   }
 
@@ -189,10 +221,15 @@ class _GameScreenState extends State<GameScreen>
               onPointerMove: _onPointerMove,
               onPointerUp: _onPointerUp,
               onPointerCancel: _onPointerUp,
-              child: CustomPaint(
-                painter: GamePainter(
-                  engine,
-                  pointer: _stickPosition,
+              // The repaint notifier is the paint source: without this the world
+              // would only be painted once and the game would look frozen.
+              child: AnimatedBuilder(
+                animation: _repaint,
+                builder: (context, child) => CustomPaint(
+                  painter: GamePainter(
+                    engine,
+                    pointer: _stickPosition,
+                  ),
                 ),
               ),
             ),
@@ -201,11 +238,14 @@ class _GameScreenState extends State<GameScreen>
           if (_stickOrigin != null && _stickPosition != null)
             Positioned.fill(
               child: IgnorePointer(
-                child: CustomPaint(
-                  painter: _StickPainter(
-                    origin: _stickOrigin!,
-                    position: _stickPosition!,
-                    color: accent,
+                child: AnimatedBuilder(
+                  animation: _repaint,
+                  builder: (context, child) => CustomPaint(
+                    painter: _StickPainter(
+                      origin: _stickOrigin!,
+                      position: _stickPosition!,
+                      color: accent,
+                    ),
                   ),
                 ),
               ),
@@ -224,11 +264,14 @@ class _GameScreenState extends State<GameScreen>
             right: 0,
             child: SafeArea(
               bottom: false,
-              child: _Hud(
-                engine: engine,
-                accent: accent,
-                onPower: _onPower,
-                onPause: _togglePause,
+              child: AnimatedBuilder(
+                animation: _repaint,
+                builder: (context, child) => _Hud(
+                  engine: engine,
+                  accent: accent,
+                  onPower: _onPower,
+                  onPause: _togglePause,
+                ),
               ),
             ),
           ),

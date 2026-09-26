@@ -7,6 +7,7 @@ import 'package:kaal_chakra_game/game/engine.dart';
 import 'package:kaal_chakra_game/game/renderer.dart';
 import 'package:kaal_chakra_game/game/storage.dart';
 import 'package:kaal_chakra_game/main.dart';
+import 'package:kaal_chakra_game/ui/game_over_screen.dart';
 import 'package:kaal_chakra_game/ui/game_screen.dart';
 
 void main() {
@@ -228,6 +229,44 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('the game over summary fits without clipping, even at large text',
+      (WidgetTester tester) async {
+    // A narrow phone with the system font turned up is what broke the summary
+    // rows: the label and the value ran off both edges.
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => MediaQuery(
+            // Stand in for a device set to the largest font size.
+            data: MediaQuery.of(context)
+                .copyWith(textScaler: const TextScaler.linear(1.4)),
+            child: const _SummaryProbe(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull, reason: 'no layout overflow');
+
+    for (final finder in <Finder>[
+      find.text('Final score'),
+      find.text('Realm reached'),
+      find.text('Enemies defeated'),
+      find.text('900').first,
+      find.byKey(const Key('retry')),
+      find.byKey(const Key('back-to-menu')),
+    ]) {
+      final box = tester.getRect(finder);
+      expect(box.left, greaterThanOrEqualTo(-0.5), reason: '$finder clips left');
+      expect(box.right, lessThanOrEqualTo(320.5), reason: '$finder clips right');
+    }
+  });
+
   testWidgets('the title screen fits small screens without clipping',
       (WidgetTester tester) async {
     tester.view.physicalSize = const Size(320, 480);
@@ -252,4 +291,27 @@ void main() {
     await tester.pump();
     expect(find.text('PLAY'), findsOneWidget);
   });
+}
+
+/// Renders the real run summary the game shows after a loss, so the layout
+/// assertions above exercise the shipped widget rather than a copy of it.
+class _SummaryProbe extends StatelessWidget {
+  const _SummaryProbe();
+
+  @override
+  Widget build(BuildContext context) {
+    return const GameOverScreen(
+      score: 900,
+      combo: 4,
+      realm: 1,
+      kills: 5,
+      completed: false,
+      newRecord: true,
+      best: 900,
+      onRetry: _noop,
+      onMenu: _noop,
+    );
+  }
+
+  static void _noop() {}
 }

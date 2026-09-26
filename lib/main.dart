@@ -5,9 +5,9 @@ import 'package:flutter/services.dart';
 
 import 'game/audio.dart';
 import 'game/engine.dart';
-import 'game/realms.dart';
 import 'game/renderer.dart';
 import 'game/storage.dart';
+import 'ui/game_over_screen.dart';
 import 'ui/game_screen.dart';
 import 'ui/menu_screen.dart';
 import 'ui/title_screen.dart';
@@ -143,6 +143,21 @@ class _KalchakraAppState extends State<KalchakraApp> {
         ),
         fontFamily: 'Roboto',
       ),
+      // The HUD and menus are hand laid out for a phone in portrait, so the
+      // system font size is clamped. Without this a device set to "largest"
+      // pushes every stat row off the side of the screen.
+      builder: (context, child) {
+        final media = MediaQuery.of(context);
+        return MediaQuery(
+          data: media.copyWith(
+            textScaler: media.textScaler.clamp(
+              minScaleFactor: 0.9,
+              maxScaleFactor: 1.15,
+            ),
+          ),
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
       home: _ready ? _buildStage() : const _SplashScreen(),
     );
   }
@@ -183,7 +198,7 @@ class _KalchakraAppState extends State<KalchakraApp> {
             ),
             if (_stage == _Stage.gameOver)
               Positioned.fill(
-                child: _GameOverScreen(
+                child: GameOverScreen(
                   score: _lastScore,
                   combo: _lastCombo,
                   realm: _lastRealm,
@@ -216,120 +231,6 @@ class _SplashScreen extends StatelessWidget {
       backgroundColor: KalchakraColors.voidBlack,
       body: Center(
         child: CircularProgressIndicator(color: KalchakraColors.gold),
-      ),
-    );
-  }
-}
-
-class _GameOverScreen extends StatelessWidget {
-  const _GameOverScreen({
-    required this.score,
-    required this.combo,
-    required this.realm,
-    required this.kills,
-    required this.completed,
-    required this.newRecord,
-    required this.best,
-    required this.onRetry,
-    required this.onMenu,
-  });
-
-  final int score;
-  final int combo;
-  final int realm;
-  final int kills;
-  final bool completed;
-  final bool newRecord;
-  final int best;
-  final VoidCallback onRetry;
-  final VoidCallback onMenu;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: KalchakraColors.voidBlack.withValues(alpha: 0.9),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Text(
-                completed ? 'THE WHEEL IS WHOLE' : 'WHEEL SHATTERED',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: KalchakraColors.gold,
-                  fontSize: 24,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 2,
-                ),
-              ),
-              if (newRecord) ...<Widget>[
-                const SizedBox(height: 8),
-                const Text(
-                  '★ NEW RECORD ★',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: KalchakraColors.energyCyan,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 2,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 22),
-              _row('Final score', score.toString()),
-              _row('Realm reached', '$realm / ${kRealms.length}'),
-              _row('Enemies defeated', kills.toString()),
-              _row('Max combo', 'x$combo'),
-              _row('Best ever', best.toString()),
-              const SizedBox(height: 26),
-              FilledButton(
-                key: const Key('retry'),
-                onPressed: onRetry,
-                style: FilledButton.styleFrom(
-                  backgroundColor: KalchakraColors.gold,
-                  foregroundColor: KalchakraColors.voidBlack,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-                child: const Text('THREAD AGAIN'),
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton(
-                key: const Key('back-to-menu'),
-                onPressed: onMenu,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: KalchakraColors.parchment,
-                  side: const BorderSide(color: KalchakraColors.parchment),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-                child: const Text('MAIN MENU'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _row(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: <Widget>[
-          Text(
-            label,
-            style: const TextStyle(color: KalchakraColors.parchment),
-          ),
-          Text(
-            value,
-            style: const TextStyle(
-              color: KalchakraColors.gold,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ],
       ),
     );
   }

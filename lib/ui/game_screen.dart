@@ -933,6 +933,24 @@ class _RealmIntro extends StatelessWidget {
                 fontSize: 16,
               ),
             ),
+            const SizedBox(height: 22),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+              decoration: BoxDecoration(
+                border: Border.all(color: accent.withValues(alpha: 0.5)),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                realm.threat,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: accent,
+                  fontSize: 12,
+                  letterSpacing: 1.2,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
           ],
         ),
       ),

@@ -104,6 +104,10 @@ class Enemy {
   /// player can read where the next bullet is coming from.
   double aimFlash = 0;
 
+  /// > 0 while the enemy is arriving on screen, so a new wave is announced
+  /// instead of simply appearing.
+  double entryFlash = 0.9;
+
   /// Shots left in the current burst.
   int burstLeft = 0;
 
@@ -113,6 +117,17 @@ class Enemy {
   /// Recent positions, drawn as fading echoes.
   final List<double> echoX = <double>[];
   final List<double> echoY = <double>[];
+}
+
+/// A short lived marker showing where the next enemy is about to appear, so an
+/// arriving wave is never a surprise.
+class SpawnMark {
+  SpawnMark({required this.x, required this.y, required this.radius});
+
+  double x;
+  double y;
+  final double radius;
+  double life = 0.9;
 }
 
 class Drop {
@@ -230,6 +245,7 @@ class GameEngine {
   final List<Enemy> enemies = <Enemy>[];
   final List<Bullet> bullets = <Bullet>[];
   final List<Drop> drops = <Drop>[];
+  final List<SpawnMark> spawnMarks = <SpawnMark>[];
   final List<Particle> particles = <Particle>[];
 
   /// Seconds accumulated towards the next enemy spawn.
@@ -238,6 +254,16 @@ class GameEngine {
   double _fireCooldown = 0;
   double _lastFireX = 0;
   double _lastFireY = -1;
+
+  /// Monotonic frame counter, used to spread the expensive scans out over time
+  /// instead of running them all on the same frame.
+  int _frame = 0;
+
+  /// How many frames between enemy dodge reads.
+  static const int _dodgeScanInterval = 5;
+
+  /// Hard ceiling on live bullets so a busy realm can never spiral.
+  static const int maxBullets = 90;
   double _shake = 0;
   double _shakeX = 0;
   double _shakeY = 0;
@@ -265,7 +291,7 @@ class GameEngine {
   static const double freezeDuration = 3;
   static const double fastDuration = 2.5;
   static const double rewindLookback = 2.2;
-  static const int maxParticles = 220;
+  static const int maxParticles = 180;
 
   int get realmGoal => 20 + 5 * realmIndex;
   Realm get realm => kRealms[realmIndex];
@@ -553,6 +579,7 @@ class GameEngine {
     if (phase != GamePhase.playing) return;
 
     elapsed += dt;
+    _frame++;
     _updatePower(dt);
     _updateCooldowns(dt);
     _updatePlayer(dt);
@@ -562,6 +589,7 @@ class GameEngine {
     _updateThreat();
     _updateDrops(dt);
     _updateCombo(dt);
+    _updateSpawnMarks(dt);
     _updateParticles(dt);
     _updateShake(dt);
     _checkRealmProgress();
@@ -733,12 +761,12 @@ class GameEngine {
     _lastFireX = dx / distance;
     _lastFireY = dy / distance;
     final speed = 640 * scale;
-    bullets.add(
+    _addBullet(
       Bullet(
         x: playerX,
         y: playerY,
-        vx: dx / distance * speed,
-        vy: dy / distance * speed,
+        vx: _lastFireX * speed,
+        vy: _lastFireY * speed,
         radius: 8 * scale,
         fromPlayer: true,
         color: 0xFFFFD700,
@@ -746,6 +774,14 @@ class GameEngine {
     );
     _emitEvent(GameEvent(GameEventType.shot, x: playerX, y: playerY));
     return true;
+  }
+
+  /// Adds a bullet, dropping the oldest one if the world is already saturated.
+  void _addBullet(Bullet bullet) {
+    if (bullets.length >= maxBullets) {
+      bullets.removeAt(0);
+    }
+    bullets.add(bullet);
   }
 
   Enemy? _nearestEnemy() {
@@ -763,14 +799,80 @@ class GameEngine {
     return best;
   }
 
+  /// Spawns arrive in small readable waves rather than as one wall.
+  ///
+  /// Every realm opens with a small number of enemies, and both the size of the
+  /// wave and the number allowed on screen creep up as the realm gets cleared,
+  /// so the pressure builds gradually instead of landing all at once.
   void _updateSpawning(double dt) {
     spawnTimer += dt;
-    final interval = math.max(0.55, 1.9 - 0.15 * realmIndex);
-    if (spawnTimer < interval) return;
-    spawnTimer = 0;
-    if (enemies.length >= math.min(30, 10 + 3 * realmIndex)) return;
-    spawnEnemy();
+    // A negative timer is the quiet beat between two waves.
+    if (spawnTimer < 0) return;
+    if (spawnTimer < spawnInterval) return;
+
+    final cap = liveEnemyCap;
+    var spawned = 0;
+    final wave = spawnWaveSize;
+    for (var i = 0; i < wave; i++) {
+      if (enemies.length >= cap) break;
+      spawnEnemy();
+      spawned++;
+    }
+    // Always reset, even if the cap blocked the wave, otherwise a full screen
+    // would stall the spawner until the player killed something.
+    spawnTimer = spawned > 0 ? -_quietBeat : 0;
   }
+
+  /// Seconds between waves. Starts relaxed in the first realm and tightens.
+  double get spawnInterval => math.max(0.9, 2.4 - 0.18 * realmIndex);
+
+  /// How many enemies arrive in a single wave. One at the very start, a couple
+  /// mid realm, a small group once the player is clearing the realm out.
+  int get spawnWaveSize {
+    if (realmProgress < 0.25) return 1;
+    if (realmProgress < 0.65) return 2;
+    return 3;
+  }
+
+  /// The pause after a wave so the player can see it coming and react.
+  double get _quietBeat => math.max(0.35, 0.9 - 0.06 * realmIndex);
+
+  /// How many enemies may be on screen *right now*. The ceiling for the realm
+  /// opens up gradually with progress, so the very first seconds of a realm are
+  /// always calm no matter how deep the player is.
+  int get liveEnemyCap {
+    final ceiling = maxEnemies;
+    // Every realm opens with only a handful on screen, even the deepest one, so
+    // the first seconds of a realm are never a wall of enemies.
+    final start = (3 + realmIndex ~/ 3).toDouble();
+    final ramp = start + (ceiling - start) * realmProgress;
+    return ramp.round().clamp(start.round(), ceiling);
+  }
+
+  /// The most enemies this realm will ever allow at once.
+  int get maxEnemies => math.min(24, 7 + 2 * realmIndex).toInt();
+
+  /// Enemy abilities unlock one realm at a time instead of all landing on the
+  /// player at once:
+  ///
+  /// * realm 0 — close in and ram, nothing else
+  /// * realm 1 — shooters appear and open fire
+  /// * realm 2 — enemies start dodging the player's shots
+  /// * realm 3 — weavers appear and fan out bursts
+  bool get _canFire => realmIndex >= 1;
+
+  bool get _canDodge => realmIndex >= 2;
+
+  bool get _canWeaveHard => realmIndex >= 3;
+
+  /// 0..1 — how far through the current realm the player is. Enemies speed up
+  /// slightly as a realm gets cleared so the last few kills still bite.
+  double get realmProgress =>
+      realmGoal <= 0 ? 0 : (killsInRealm / realmGoal).clamp(0.0, 1.0);
+
+  /// The single difficulty scalar used for enemy speed.
+  double get difficulty =>
+      1 + 0.12 * realmIndex + 0.2 * realmProgress;
 
   /// Spawns one enemy on a random screen edge. Public so tests can drive it.
   void spawnEnemy({EnemyType? forcedType}) {
@@ -793,7 +895,7 @@ class GameEngine {
         y = _random.nextDouble() * _height;
     }
 
-    final difficulty = 1 + 0.16 * realmIndex;
+    final difficulty = this.difficulty;
     final int hp;
     final double radius;
     final double speed;
@@ -834,6 +936,9 @@ class GameEngine {
         strafe = 0.55;
     }
 
+    spawnMarks.add(SpawnMark(x: x, y: y, radius: radius));
+    if (spawnMarks.length > 24) spawnMarks.removeAt(0);
+
     enemies.add(
       Enemy(
         x: x,
@@ -853,16 +958,19 @@ class GameEngine {
   EnemyType _rollEnemyType() {
     final roll = _random.nextDouble();
     // Deeper realms mix in more shooters and weavers, so the incoming fire
-    // gets denser and less predictable.
-    final wraithChance = realmIndex >= 2 ? 0.08 + 0.035 * realmIndex : 0.0;
-    final shooterChance = (0.24 + 0.04 * realmIndex).clamp(0.0, 0.45);
-    final weaverChance = realmIndex >= 2 ? 0.06 + 0.035 * realmIndex : 0.0;
+    // gets denser and less predictable. The first realm is deliberately plain
+    // so a new player is never hit with every archetype at once.
+    final wraithChance = realmIndex >= 4 ? 0.06 + 0.03 * (realmIndex - 4) : 0.0;
+    final shooterChance =
+        realmIndex >= 1 ? (0.20 + 0.035 * (realmIndex - 1)).clamp(0.0, 0.42) : 0.0;
+    final weaverChance = realmIndex >= 3 ? 0.06 + 0.03 * (realmIndex - 3) : 0.0;
     if (roll < wraithChance) return EnemyType.wraith;
     if (roll < wraithChance + weaverChance) return EnemyType.weaver;
     if (roll < wraithChance + weaverChance + shooterChance) {
       return EnemyType.shooter;
     }
-    if (roll < wraithChance + weaverChance + shooterChance + 0.24) {
+    // The fast rusher is the one archetype the very first realm is allowed.
+    if (roll < wraithChance + weaverChance + shooterChance + 0.28) {
       return EnemyType.fast;
     }
     return EnemyType.basic;
@@ -871,8 +979,17 @@ class GameEngine {
   void _updateEnemies(double dt) {
     final mult = worldMultiplier;
     final margin = 90.0 * scale;
-    // Deeper realms weave and dodge more often.
-    final dodgeSkill = (0.18 + 0.11 * realmIndex).clamp(0.0, 0.85);
+    // Dodging only unlocks from the third realm, and gets likelier after that.
+    final dodgeSkill =
+        _canDodge ? (0.14 + 0.11 * (realmIndex - 2)).clamp(0.0, 0.8) : 0.0;
+    // Weaving is the one movement trick available from the start, but it stays
+    // shallow until the deeper realms.
+    final weaveScale = _canWeaveHard ? 0.4 + 0.08 * realmIndex : 0.3;
+    // Scanning every bullet for every enemy is the most expensive thing the
+    // simulation can do, so the dodge read runs on a fixed cadence instead of
+    // once per enemy per frame. 12 reads a second is still far faster than a
+    // human can react to.
+    final scanDodge = dodgeSkill > 0 && _frame % _dodgeScanInterval == 0;
 
     for (var i = enemies.length - 1; i >= 0; i--) {
       final enemy = enemies[i];
@@ -882,6 +999,9 @@ class GameEngine {
       }
       if (enemy.aimFlash > 0) {
         enemy.aimFlash = math.max(0, enemy.aimFlash - dt);
+      }
+      if (enemy.entryFlash > 0) {
+        enemy.entryFlash = math.max(0, enemy.entryFlash - dt);
       }
 
       // Echo trail, a few samples per second.
@@ -910,13 +1030,13 @@ class GameEngine {
           enemy.strafeDir = _random.nextDouble() < 0.5 ? -1 : 1;
         }
         final wobble = math.sin(elapsed * 2 + enemy.wobbleSeed) * 0.25;
-        final weave = (0.55 + enemy.strafeSkill) + wobble;
+        final weave = (0.35 + enemy.strafeSkill) * weaveScale + wobble;
 
         var dirX = dx / distance * radial + (-dy / distance) * enemy.strafeDir * weave;
         var dirY = dy / distance * radial + (dx / distance) * enemy.strafeDir * weave;
 
         // Slip away from a shot that is about to land on them.
-        final incoming = _incomingShot(enemy);
+        final incoming = scanDodge ? _incomingShot(enemy) : null;
         if (incoming != null && _random.nextDouble() < dodgeSkill * 3 * dt) {
           final length = math.sqrt(incoming.vx * incoming.vx + incoming.vy * incoming.vy);
           if (length > 0.001) {
@@ -968,6 +1088,8 @@ class GameEngine {
     Bullet? best;
     var bestTime = double.infinity;
     for (final bullet in bullets) {
+      // Enemy fire can never dodge the player, so skip it without branching on
+      // the rest of the list.
       if (!bullet.fromPlayer) continue;
       final dx = enemy.x - bullet.x;
       final dy = enemy.y - bullet.y;
@@ -992,7 +1114,7 @@ class GameEngine {
   /// the shot so the player can read the direction, and the cadence, burst size
   /// and accuracy all scale with the realm depth.
   void _updateEnemyFire(Enemy enemy, double dt, double distance) {
-    if (distance > 560 * scale || distance < 0.001) {
+    if (!_canFire || distance > 560 * scale || distance < 0.001) {
       enemy.shootTimer = 0;
       enemy.burstLeft = 0;
       return;
@@ -1059,7 +1181,7 @@ class GameEngine {
     // Weavers fan their burst out sideways so a single sidestep is not enough.
     final spread = enemy.type == EnemyType.weaver ? 0.20 : 0.0;
     if (spread <= 0) {
-      bullets.add(
+      _addBullet(
         Bullet(
           x: enemy.x,
           y: enemy.y,
@@ -1077,7 +1199,7 @@ class GameEngine {
       final angle = i * spread * fan;
       final cosA = math.cos(angle);
       final sinA = math.sin(angle);
-      bullets.add(
+      _addBullet(
         Bullet(
           x: enemy.x,
           y: enemy.y,
@@ -1317,12 +1439,22 @@ class GameEngine {
     _emit(x, y, color, count, speed: 5, life: 0.7, size: 4);
   }
 
+  void _updateSpawnMarks(double dt) {
+    for (var i = spawnMarks.length - 1; i >= 0; i--) {
+      final mark = spawnMarks[i];
+      mark.life -= dt;
+      if (mark.life <= 0) spawnMarks.removeAt(i);
+    }
+  }
+
   void _updateParticles(double dt) {
+    // The drag factor is the same for every particle, so it is computed once
+    // per frame rather than once per particle.
+    final drag = math.pow(0.12, dt).toDouble();
     for (var i = particles.length - 1; i >= 0; i--) {
       final p = particles[i];
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      final drag = math.pow(0.12, dt).toDouble();
       p.vx *= drag;
       p.vy *= drag;
       p.life -= dt;

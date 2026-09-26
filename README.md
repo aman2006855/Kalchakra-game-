@@ -12,16 +12,38 @@ fragments are scattered across nine mythological realms.
 - **9 Lokas** — SATYA, TAPTA, JALA, VAYU, BHUMI, ANTARIKSHA, SWARGA, NARAKA and
   MAHAKAAL LOKA. Each realm has its own palette, spawns faster, mixes in nastier
   archetypes and demands more kills (20 → 60) to clear.
-- **Enemies** — every archetype shoots back, so standing in the middle is never
-  safe:
-  - `basic` charges you *and* fires a slow aimed shot.
+- **Difficulty unlocks one realm at a time** — nothing is thrown at you all at
+  once, and every realm intro tells you exactly what just opened up:
+
+  | Realm | What the enemies can do |
+  | --- | --- |
+  | 1 · SATYA | Only close in and ram. Learn to move. |
+  | 2 · TAPTA | **Shooters appear** and open fire. |
+  | 3 · JALA | **They dodge** your shots. |
+  | 4 · VAYU | **Weavers appear** — sidestep in fan bursts. |
+  | 5+ | Range holding, lead-predicted fire, wraiths, then everything at once. |
+
+  The first realm also runs the gentlest settings: 3 enemies at most, one every
+  2.4 s. Deeper realms climb to 24 enemies every 0.9 s. Enemies speed up a
+  little further as you clear a realm, so the last few kills still bite.
+- **Enemies arrive in readable waves, never as a wall** — even the ninth realm
+  opens with only 5 on screen. Two things open up as you clear a realm:
+  - **the live cap**: the most enemies allowed at once ramps from a handful up
+    to the realm ceiling,
+  - **the wave size**: one arrival, then two, then a small group of three.
+
+  Every wave is followed by a short quiet beat, and each new arrival is
+  announced with a closing ring plus a red mark at the screen edge it tears
+  through, so you can always see what is coming and from where.
+- **Enemies** — five archetypes, each with its own behaviour:
+  - `basic` charges you, and shoots back once firing is unlocked.
   - `fast` darts in and snipes from close range.
   - `shooter` holds a 250 px ring and fires aimed, lead-predicted shots.
-  - `weaver` (from the third realm) slides sideways at mid range and fans
-    2–3 round bursts so a single sidestep is not enough.
+  - `weaver` slides sideways at mid range and fans 2–3 round bursts so a single
+    sidestep is not enough.
   - `wraith` — armoured, 6 HP, 4.5× score.
   - They weave around their preferred distance, watch your own shots and
-    actively slip sideways to dodge them (dodging gets more likely deeper in).
+    actively slip sideways to dodge them (from the third realm onwards).
   - Every shot is telegraphed with a closing red ring ~0.3 s before it leaves
     the barrel, so incoming fire is always readable.
 - **Real-time threat measurement** — every frame the engine sums up the
@@ -98,6 +120,30 @@ risk/reward option instead of replaying from the beginning.
     smartphone has no keyboard, so the `Focus`/`KeyEvent` handler and the
     engine's `setKeyboard` input channel are gone. Move, attack, all three time
     powers, dash, shield and pause are now reachable by touch only.
+15. **The game stalled once the screen filled up** — every enemy, bullet, drop
+    and particle was building a brand new `RadialGradient` shader on every
+    frame, so a busy realm produced hundreds of shader allocations per frame and
+    the game crawled. The glows are now cached per colour and drawn through a
+    canvas transform, flat circles reuse a single paint, and the decorative
+    passes (grid, enemy echoes, per-entity glows) drop out at high entity counts.
+16. **The first realm was as hard as the ninth** — every archetype spawned with
+    its full kit immediately. Enemy abilities now unlock one realm at a time
+    (see the table above), the opening realm runs the gentlest spawn settings,
+    and the realm intro states the new threat out loud.
+17. **The simulation had no ceilings** — bullets, particles and the enemy
+    dodge scan (which is enemies × bullets per frame) were unbounded. Bullets
+    are now capped at 90, the dodge read runs on a fixed cadence instead of
+    every enemy every frame, and the particle drag factor is computed once per
+    frame instead of once per particle.
+18. **The run summary overflowed the screen** — the stat rows were a `Row` of
+    two unconstrained texts, so on a phone with the system font turned up the
+    label and the value ran off both edges and overlapped ("Realm reached1 /").
+    The summary is now a scaled, scrollable panel with flexible label/value
+    columns, and the system font scale is clamped app-wide to 1.15.
+19. **Enemies arrived as one confusing wall** — the cap was flat for the whole
+    realm, so a deep realm opened with its full allowance on screen. The cap now
+    ramps within the realm, arrivals come in waves of one to three separated by
+    a quiet beat, and each new enemy is announced as it tears onto the screen.
 
 ## Project structure
 
@@ -111,12 +157,13 @@ risk/reward option instead of replaying from the beginning.
 │   │   ├── audio.dart         # Synthesised WAV sound effects + ambient drone
 │   │   └── storage.dart       # Save data model + shared_preferences store
 │   └── ui/
-│       ├── title_screen.dart  # Animated chakra title
-│       ├── menu_screen.dart   # Rotating wheel menu, scores, lore, settings
-│       └── game_screen.dart   # Game loop, touch input layer, HUD, overlays
+│       ├── title_screen.dart     # Animated chakra title
+│       ├── menu_screen.dart      # Rotating wheel menu, scores, lore, settings
+│       ├── game_screen.dart      # Game loop, touch input layer, HUD, overlays
+│       └── game_over_screen.dart # End of run summary
 ├── test/
-│   ├── engine_test.dart       # 42 unit tests over the simulation
-│   └── widget_test.dart       # 6 tests: title, menu, game loop, tap vs drag
+│   ├── engine_test.dart       # 51 unit tests over the simulation
+│   └── widget_test.dart       # 7 tests: title, summary, menu, game loop
 ├── android/ ios/ web/ linux/ macos/ windows/
 └── pubspec.yaml
 ```
@@ -126,7 +173,7 @@ risk/reward option instead of replaying from the beginning.
 ```bash
 flutter pub get
 flutter analyze   # No issues found
-flutter test      # 48 tests, all passing
+flutter test      # 58 tests, all passing
 ```
 
 ## Build the APK

@@ -28,6 +28,60 @@ class GamePainter extends CustomPainter {
   /// Live pointer position used to draw the movement tether, if any.
   final Offset? pointer;
 
+  /// Soft glow paints are built once and reused for the rest of the run.
+  ///
+  /// Building a [RadialGradient] shader for every enemy, bullet and particle on
+  /// every frame is what used to make the game stutter once the screen filled
+  /// up, so the shaders are cached per (colour, alpha) and drawn through a
+  /// canvas transform instead of being rebuilt per entity.
+  static final Map<String, Paint> _glowCache = <String, Paint>{};
+
+  /// Above this many entities the purely decorative passes are skipped so the
+  /// simulation keeps a steady frame rate on mid range phones.
+  static const int _crowdedThreshold = 26;
+
+  /// Only once the screen is genuinely saturated do the glows go, because they
+  /// carry the readability of where the fire is coming from.
+  static const int _saturatedThreshold = 55;
+
+  /// Shared paints for the hot paths so the frame does not allocate.
+  static final Paint _temporalLine = Paint()
+    ..color = KalchakraColors.temporalRed
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  static final Paint _temporalFill = Paint()..color = KalchakraColors.temporalRed;
+
+  bool get _crowded =>
+      engine.enemies.length + engine.bullets.length > _crowdedThreshold;
+
+  bool get _saturated =>
+      engine.enemies.length + engine.bullets.length > _saturatedThreshold;
+
+  /// A unit-radius glow paint, cached per colour and alpha.
+  static Paint _glow(Color color, double alpha) {
+    final key = '${color.toARGB32()}@${(alpha * 100).round()}';
+    return _glowCache.putIfAbsent(key, () {
+      final c = color.withValues(alpha: alpha);
+      return Paint()
+        ..shader = ui.Gradient.radial(
+          const Offset(0, 0),
+          1,
+          <Color>[c, c.withValues(alpha: 0)],
+        );
+    });
+  }
+
+  /// Draws a cached glow centred on [center]. The cached shader is built around
+  /// the origin, so the canvas is shifted into place instead of rebuilding the
+  /// shader for every entity.
+  void _glowAt(Canvas canvas, Offset center, double radius, Color color, double alpha) {
+    if (radius <= 0) return;
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.drawCircle(Offset.zero, radius, _glow(color, alpha));
+    canvas.restore();
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final realm = engine.realm;
@@ -41,13 +95,16 @@ class GamePainter extends CustomPainter {
 
     _drawBackground(canvas, size, background, accent);
     _drawTimeOverlay(canvas, size);
-    _drawGrid(canvas, size, accent);
-    _drawDrops(canvas, accent);
+    if (!_crowded) _drawGrid(canvas, size, accent);      _drawDrops(canvas, accent);
+    _drawSpawnMarks(canvas);
     _drawEnemies(canvas);
     _drawBullets(canvas);
     _drawPlayer(canvas, accent);
-    _drawParticles(canvas);
-    _drawThreatArrow(canvas, size);
+    if (_crowded) {
+      _drawParticlesCheap(canvas);
+    } else {
+      _drawParticles(canvas);
+    }    _drawThreatArrow(canvas, size);
     _drawPointerTether(canvas);
 
     canvas.restore();
@@ -120,14 +177,7 @@ class GamePainter extends CustomPainter {
       final pulse = 1 + math.sin(drop.timer * 4) * 0.12;
       final radius = 15 * engine.scale * pulse;
 
-      canvas.drawCircle(
-        center,
-        radius * 2.1,
-        Paint()
-          ..shader = RadialGradient(
-            colors: <Color>[color.withValues(alpha: 0.35), color.withValues(alpha: 0)],
-          ).createShader(Rect.fromCircle(center: center, radius: radius * 2.1)),
-      );
+      if (!_saturated) _glowAt(canvas, center, radius * 2.1, color, 0.35);
       canvas.drawCircle(
         center,
         radius,
@@ -160,82 +210,103 @@ class GamePainter extends CustomPainter {
     }
   }
 
+  /// Warning marks at the screen edge where the next wave is tearing through.
+  void _drawSpawnMarks(Canvas canvas) {
+    final paint = Paint()..style = PaintingStyle.stroke;
+    for (final mark in engine.spawnMarks) {
+      final t = 1 - mark.life / 0.9;
+      paint
+        ..color = KalchakraColors.temporalRed.withValues(alpha: 0.5 * (1 - t))
+        ..strokeWidth = 2;
+      canvas.drawCircle(
+        Offset(mark.x, mark.y),
+        mark.radius * (0.5 + 1.6 * t),
+        paint,
+      );
+    }
+  }
+
   void _drawEnemies(Canvas canvas) {
+    // One paint is reused for every flat circle; only the glows need a shader.
+    final flat = Paint();
+    final echoPaint = Paint();
+    final strokePaint = Paint()..style = PaintingStyle.stroke;
+    final crowded = _crowded;
+    final saturated = _saturated;
+
     for (final enemy in engine.enemies) {
-      // Echoes of where the enemy has been.
-      for (var i = 0; i < enemy.echoX.length; i++) {
-        final fade = (i + 1) / (enemy.echoX.length + 1);
-        canvas.drawCircle(
-          Offset(enemy.echoX[i], enemy.echoY[i]),
-          enemy.radius * 0.32,
-          Paint()..color = Color(enemy.color).withValues(alpha: 0.20 * fade),
-        );
+      final color = Color(enemy.color);
+
+      // Echoes of where the enemy has been. Purely decorative, so they are the
+      // first thing dropped when the screen gets busy.
+      if (!crowded) {
+        for (var i = 0; i < enemy.echoX.length; i++) {
+          final fade = (i + 1) / (enemy.echoX.length + 1);
+          echoPaint.color = color.withValues(alpha: 0.20 * fade);
+          canvas.drawCircle(
+            Offset(enemy.echoX[i], enemy.echoY[i]),
+            enemy.radius * 0.32,
+            echoPaint,
+          );
+        }
       }
 
       final center = Offset(enemy.x, enemy.y);
-      final color = Color(enemy.color);
       final isWraith = enemy.type == EnemyType.wraith;
 
-      // Glow (radial gradient keeps this cheap on Impeller).
-      final glowRadius = enemy.radius * 2.4;
-      canvas.drawCircle(
-        center,
-        glowRadius,
-        Paint()
-          ..shader = RadialGradient(
-            colors: <Color>[color.withValues(alpha: 0.35), color.withValues(alpha: 0)],
-          ).createShader(Rect.fromCircle(center: center, radius: glowRadius)),
-      );
+      if (!saturated) _glowAt(canvas, center, enemy.radius * 2.4, color, 0.35);
 
-      canvas.drawCircle(center, enemy.radius, Paint()..color = KalchakraColors.cosmic);
-      canvas.drawCircle(
-        center,
-        enemy.radius,
-        Paint()
-          ..color = color
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = isWraith ? 4 : 3,
-      );
+      canvas.drawCircle(center, enemy.radius, flat..color = KalchakraColors.cosmic);
+      strokePaint
+        ..color = color
+        ..strokeWidth = isWraith ? 4.0 : 3.0;
+      canvas.drawCircle(center, enemy.radius, strokePaint);
 
       // Eyes.
       final eyeOffset = enemy.radius * 0.35;
       final eyeRadius = enemy.radius * 0.17;
+      flat.color = color;
       canvas.drawCircle(
         center.translate(-eyeOffset, -eyeRadius * 0.9),
         eyeRadius,
-        Paint()..color = color,
+        flat,
       );
       canvas.drawCircle(
         center.translate(eyeOffset, -eyeRadius * 0.9),
         eyeRadius,
-        Paint()..color = color,
+        flat,
       );
+
+      if (enemy.entryFlash > 0) {
+        // A closing ring announces the arrival so a wave never just appears.
+        final t = 1 - enemy.entryFlash / 0.9;
+        strokePaint
+          ..color = color.withValues(alpha: 0.8 * (1 - t))
+          ..strokeWidth = 2.5;
+        canvas.drawCircle(
+          center,
+          enemy.radius * (3.2 - 1.4 * t),
+          strokePaint,
+        );
+      }
 
       if (enemy.dodgeFlash > 0) {
         // Cyan streak showing the enemy just slipped away from a shot.
-        canvas.drawCircle(
-          center,
-          enemy.radius * 1.7,
-          Paint()
-            ..color = KalchakraColors.energyCyan
-                .withValues(alpha: 0.35 * enemy.dodgeFlash / 0.18)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 2,
-        );
+        strokePaint
+          ..color = KalchakraColors.energyCyan
+              .withValues(alpha: 0.35 * enemy.dodgeFlash / 0.18)
+          ..strokeWidth = 2;
+        canvas.drawCircle(center, enemy.radius * 1.7, strokePaint);
       }
 
       if (enemy.aimFlash > 0) {
         // Aim tell: the ring closes as the shot lines up on the player.
         final t = 1 - enemy.aimFlash / 0.3;
-        canvas.drawCircle(
-          center,
-          enemy.radius * (2.6 - 1.4 * t),
-          Paint()
-            ..color = KalchakraColors.temporalRed
-                .withValues(alpha: 0.85 * (1 - t) + 0.15)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 2,
-        );
+        strokePaint
+          ..color = KalchakraColors.temporalRed
+              .withValues(alpha: 0.85 * (1 - t) + 0.15)
+          ..strokeWidth = 2;
+        canvas.drawCircle(center, enemy.radius * (2.6 - 1.4 * t), strokePaint);
         final toPlayer = Offset(engine.playerX, engine.playerY) - center;
         final length = toPlayer.distance;
         if (length > 0.001) {
@@ -243,10 +314,7 @@ class GamePainter extends CustomPainter {
           canvas.drawLine(
             center + dir * (enemy.radius + 6),
             center + dir * (enemy.radius + 18),
-            Paint()
-              ..color = KalchakraColors.temporalRed
-              ..strokeWidth = 3
-              ..strokeCap = StrokeCap.round,
+            _temporalLine,
           );
         }
       }
@@ -272,12 +340,14 @@ class GamePainter extends CustomPainter {
           ..lineTo(center.dx - 6, center.dy - enemy.radius - 4)
           ..lineTo(center.dx + 6, center.dy - enemy.radius - 4)
           ..close();
-        canvas.drawPath(marker, Paint()..color = KalchakraColors.temporalRed);
+        canvas.drawPath(marker, _temporalFill);
       }
     }
   }
 
   void _drawBullets(Canvas canvas) {
+    final flat = Paint();
+    final saturated = _saturated;
     for (final bullet in engine.bullets) {
       final center = Offset(bullet.x, bullet.y);
       final color = Color(bullet.color);
@@ -287,15 +357,8 @@ class GamePainter extends CustomPainter {
         bullet.radius * 0.7,
         Paint()..color = color.withValues(alpha: 0.45),
       );
-      canvas.drawCircle(
-        center,
-        bullet.radius * 2.2,
-        Paint()
-          ..shader = RadialGradient(
-            colors: <Color>[color.withValues(alpha: 0.4), color.withValues(alpha: 0)],
-          ).createShader(Rect.fromCircle(center: center, radius: bullet.radius * 2.2)),
-      );
-      canvas.drawCircle(center, bullet.radius, Paint()..color = color);
+      if (!saturated) _glowAt(canvas, center, bullet.radius * 2.2, color, 0.4);
+      canvas.drawCircle(center, bullet.radius, flat..color = color);
     }
   }
 
@@ -305,15 +368,7 @@ class GamePainter extends CustomPainter {
     const gold = KalchakraColors.gold;
 
     // Aura.
-    canvas.drawCircle(
-      center,
-      radius * 2.6,
-      Paint()
-        ..shader = ui.Gradient.radial(center, radius * 2.6, <Color>[
-          gold.withValues(alpha: 0.30),
-          gold.withValues(alpha: 0),
-        ]),
-    );
+    _glowAt(canvas, center, radius * 2.6, gold, 0.30);
 
     if (engine.isFlashing) {
       canvas.drawCircle(
@@ -404,6 +459,16 @@ class GamePainter extends CustomPainter {
         Paint()
           ..color = Color(particle.color).withValues(alpha: particle.alpha),
       );
+    }
+  }
+
+  /// Particles are plain dots, so a single reused paint is enough and we skip
+  /// the whole pass once the screen is saturated.
+  void _drawParticlesCheap(Canvas canvas) {
+    final paint = Paint();
+    for (final particle in engine.particles) {
+      paint.color = Color(particle.color).withValues(alpha: particle.alpha);
+      canvas.drawCircle(Offset(particle.x, particle.y), particle.size, paint);
     }
   }
 

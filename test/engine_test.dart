@@ -440,11 +440,256 @@ void main() {
     });
   });
 
+  group('spawn pacing', () {
+    test('the live enemy cap opens up gradually across the realm', () {
+      final engine = GameEngine(random: math.Random(60));
+      engine.resize(400, 800);
+      engine.startRun(startRealmIndex: kRealms.length - 1);
+      _skipIntro(engine);
+
+      engine.killsInRealm = 0;
+      final atStart = engine.liveEnemyCap;
+      engine.killsInRealm = engine.realmGoal ~/ 2;
+      final mid = engine.liveEnemyCap;
+      engine.killsInRealm = engine.realmGoal;
+      final atEnd = engine.liveEnemyCap;
+
+      expect(atStart, lessThan(mid));
+      expect(mid, lessThan(atEnd));
+      expect(atEnd, engine.maxEnemies);
+    });
+
+    test('even the deepest realm opens calm', () {
+      final engine = GameEngine(random: math.Random(61));
+      engine.startRun(startRealmIndex: kRealms.length - 1);
+      _skipIntro(engine);
+      engine.killsInRealm = 0;
+
+      // Not a wall of enemies the instant a realm begins.
+      expect(engine.liveEnemyCap, lessThanOrEqualTo(6));
+      expect(engine.liveEnemyCap, lessThan(engine.maxEnemies));
+    });
+
+    test('wave size grows one, then two, then three', () {
+      final engine = GameEngine(random: math.Random(62));
+      engine.startRun();
+      _skipIntro(engine);
+
+      engine.killsInRealm = 0;
+      expect(engine.spawnWaveSize, 1);
+      engine.killsInRealm = (engine.realmGoal * 0.4).floor();
+      expect(engine.spawnWaveSize, 2);
+      engine.killsInRealm = engine.realmGoal;
+      expect(engine.spawnWaveSize, 3);
+    });
+
+    test('a quiet beat separates the waves', () {
+      final engine = GameEngine(random: math.Random(63));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      // One short of the goal: enough for the biggest wave size without
+      // tipping the realm over into the next one mid test.
+      engine.killsInRealm = engine.realmGoal - 1;
+      engine.spawnTimer = 0;
+
+      // Force a wave, then check the spawner backs off instead of instantly
+      // dumping the next one on top of it.
+      var sawRest = false;
+      for (var i = 0; i < 120; i++) {
+        engine.update(0.05);
+        if (engine.spawnTimer < 0) sawRest = true;
+      }
+      expect(sawRest, isTrue);
+    });
+
+    test('a long run never breaks the live cap', () {
+      final engine = GameEngine(random: math.Random(64));
+      engine.resize(400, 800);
+      engine.startRun(startRealmIndex: 3);
+      _skipIntro(engine);
+
+      for (var i = 0; i < 3000; i++) {
+        engine.invincible = true;
+        engine.health = 99;
+        engine.setStick(math.sin(i / 25), math.cos(i / 25));
+        engine.update(1 / 60);
+        expect(
+          engine.enemies.length,
+          lessThanOrEqualTo(engine.liveEnemyCap),
+          reason: 'frame $i broke the live cap',
+        );
+      }
+    });
+
+    test('arrivals are announced with a spawn mark', () {
+      final engine = GameEngine(random: math.Random(65));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.spawnMarks.clear();
+
+      engine.spawnEnemy();
+      expect(engine.spawnMarks, isNotEmpty);
+
+      for (var i = 0; i < 40; i++) {
+        engine.update(0.05);
+      }
+      expect(engine.spawnMarks, isEmpty, reason: 'marks must expire');
+    });
+  });
+
+  group('difficulty ramp', () {
+    test('the first realm never opens fire, it only teaches movement', () {
+      final engine = GameEngine(random: math.Random(50));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+
+      for (final type in EnemyType.values) {
+        _hostile(
+          engine,
+          type,
+          x: engine.playerX + 200,
+          y: engine.playerY,
+          speed: 0,
+        );
+      }
+
+      for (var i = 0; i < 200; i++) {
+        engine.update(0.05);
+      }
+
+      expect(
+        engine.bullets.where((b) => !b.fromPlayer),
+        isEmpty,
+        reason: 'realm 1 must not open with the full enemy kit',
+      );
+    });
+
+    test('firing unlocks from the second realm onwards', () {
+      final engine = GameEngine(random: math.Random(51));
+      engine.resize(400, 800);
+      engine.startRun(startRealmIndex: 1);
+      _skipIntro(engine);
+      engine.invincible = true;
+      _hostile(
+        engine,
+        EnemyType.shooter,
+        x: engine.playerX + 200,
+        y: engine.playerY,
+        speed: 0,
+      );
+
+      var fired = false;
+      for (var i = 0; i < 120; i++) {
+        engine.update(0.05);
+        if (engine.bullets.any((b) => !b.fromPlayer)) {
+          fired = true;
+          break;
+        }
+      }
+      expect(fired, isTrue);
+    });
+
+    test('dodging only unlocks later, never in the first realms', () {
+      final engine = GameEngine(random: math.Random(52));
+      engine.resize(400, 800);
+
+      for (var realm = 0; realm < kRealms.length; realm++) {
+        engine.startRun(startRealmIndex: realm);
+        _skipIntro(engine);
+        expect(
+          engine.realmIndex,
+          realm,
+          reason: 'a hostile placed in realm $realm should be active',
+        );
+      }
+    });
+
+    test('enemy cap and spawn pace start gentle and tighten later', () {
+      final engine = GameEngine(random: math.Random(53));
+      engine.startRun();
+      _skipIntro(engine);
+
+      final firstCap = engine.maxEnemies;
+      final firstSpawn = engine.spawnInterval;
+      final firstDifficulty = engine.difficulty;
+
+      engine.realmIndex = kRealms.length - 1;
+      expect(engine.maxEnemies, greaterThan(firstCap));
+      expect(engine.spawnInterval, lessThan(firstSpawn));
+      expect(engine.difficulty, greaterThan(firstDifficulty));
+    });
+
+    test('enemies speed up as the player clears the current realm', () {
+      final engine = GameEngine(random: math.Random(54));
+      engine.startRun();
+      _skipIntro(engine);
+
+      final atStart = engine.difficulty;
+      engine.killsInRealm = engine.realmGoal;
+      expect(engine.realmProgress, 1.0);
+      expect(engine.difficulty, greaterThan(atStart));
+    });
+
+    test('the first realm never rolls a ranged or armoured archetype', () {
+      final engine = GameEngine(random: math.Random(55));
+      engine.startRun();
+      _skipIntro(engine);
+      engine.enemies.clear();
+      engine.spawnTimer = 99;
+
+      for (var i = 0; i < 300; i++) {
+        engine.spawnEnemy(forcedType: EnemyType.basic);
+        engine.update(0.05);
+      }
+      engine.enemies.clear();
+
+      final seen = <EnemyType>{};
+      for (var i = 0; i < 400; i++) {
+        engine.spawnTimer = 99;
+        engine.spawnEnemy();
+        seen.add(engine.enemies.last.type);
+        if (engine.enemies.length > 40) engine.enemies.removeAt(0);
+      }
+
+      expect(seen, everyElement(isNot(EnemyType.wraith)));
+      expect(seen, everyElement(isNot(EnemyType.weaver)));
+      expect(seen, everyElement(isNot(EnemyType.shooter)));
+    });
+
+    test('a saturated world stays inside the bullet ceiling', () {
+      final engine = GameEngine(random: math.Random(56));
+      engine.resize(400, 800);
+      engine.startRun(startRealmIndex: kRealms.length - 1);
+      _skipIntro(engine);
+
+      for (var i = 0; i < 2000; i++) {
+        engine.setStick(1, 0);
+        engine.setAim(engine.playerX + 300, engine.playerY);
+        engine.update(0.05);
+        expect(
+          engine.bullets.length,
+          lessThanOrEqualTo(GameEngine.maxBullets),
+        );
+        expect(
+          engine.enemies.length,
+          lessThanOrEqualTo(engine.maxEnemies),
+        );
+        expect(
+          engine.particles.length,
+          lessThanOrEqualTo(GameEngine.maxParticles),
+        );
+      }
+    });
+  });
+
   group('enemy fire', () {
     test('shooters shoot back at the player', () {
       final engine = GameEngine(random: math.Random(30));
       engine.resize(400, 800);
-      engine.startRun();
+      engine.startRun(startRealmIndex: 1);
       _skipIntro(engine);
       engine.invincible = true;
 
@@ -476,7 +721,7 @@ void main() {
     test('charging basics also shoot, so standing still is not safe', () {
       final engine = GameEngine(random: math.Random(31));
       engine.resize(400, 800);
-      engine.startRun();
+      engine.startRun(startRealmIndex: 1);
       _skipIntro(engine);
 
       _hostile(
@@ -502,7 +747,7 @@ void main() {
     test('a shot telegraphs before it leaves the barrel', () {
       final engine = GameEngine(random: math.Random(32));
       engine.resize(400, 800);
-      engine.startRun();
+      engine.startRun(startRealmIndex: 1);
       _skipIntro(engine);
       engine.invincible = true;
 
@@ -525,7 +770,7 @@ void main() {
     test('weavers fan a burst out sideways', () {
       final engine = GameEngine(random: math.Random(33));
       engine.resize(400, 800);
-      engine.startRun();
+      engine.startRun(startRealmIndex: 1);
       _skipIntro(engine);
       engine.invincible = true;
 
@@ -554,7 +799,7 @@ void main() {
     test('enemies hold the distance they prefer instead of gluing on', () {
       final engine = GameEngine(random: math.Random(34));
       engine.resize(400, 800);
-      engine.startRun();
+      engine.startRun(startRealmIndex: 1);
       _skipIntro(engine);
       engine.invincible = true;
 
@@ -582,7 +827,7 @@ void main() {
     test('enemies slide sideways instead of queueing in a straight line', () {
       final engine = GameEngine(random: math.Random(35));
       engine.resize(400, 800);
-      engine.startRun();
+      engine.startRun(startRealmIndex: 1);
       _skipIntro(engine);
       engine.invincible = true;
 

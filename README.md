@@ -6,15 +6,20 @@ Jo pehle **exactly 60** pahuncha, wo jeeta. Zyada aane wale kadam count nahi hot
 
 ## Project Structure
 
+Poora Flutter-standard structure — sabhi 6 platforms ke saath (Android par focus,
+baaki folders builders ki requirement ke liye maujood hain):
+
 ```
 ├── lib/
 │   └── main.dart          # Pura game (UI + logic, single file)
-├── android/               # Native Android platform folder (Gradle build)
+├── android/               # Native Android platform folder (arm64-v8a release target)
+├── ios/                   # iOS platform folder (builders ki requirement)
+├── web/, linux/, macos/, windows/  # Baaki platform folders
 ├── test/
 │   └── widget_test.dart   # Pura game play karke winner dialog verify karta hai
 ├── pubspec.yaml           # Package config (name: kaal_chakra_game)
 ├── pubspec.lock           # Locked dependency versions (reproducible builds)
-├── analysis_options.yaml  # Lints
+├── analysis_options.yaml  # Lints (platform directories excluded)
 ├── .gitignore             # build/, .dart_tool/ etc. zip se bahar rehte hain
 ├── .metadata              # Flutter tooling metadata
 └── README.md
@@ -49,6 +54,6 @@ cd <repo-folder>
 zip -r ../kaal_chakra.zip . -x ".git/*"
 ```
 
-Note: `.gitignore` ke baaki patterns (`build/`, `.dart_tool/`, `.idea/` etc.) local
-machine pe exist hi nahi karte (kabhi build nahi kiya), isliye unhe exclude karne ki
-zaroorat nahi. `.git/` folder zaroor exclude karein.
+Note: `.gitignore` ke patterns (`build/`, `.dart_tool/`, `.idea/` etc.) local
+machine pe un folders ko commit hone se rok dete hain. `.git/` folder zip mein
+zaroor exclude karein.

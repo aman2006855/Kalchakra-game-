@@ -40,13 +40,13 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen>
     with SingleTickerProviderStateMixin {
-
   /// Drives the simulation (Ticker) and the repaints (ChangeNotifier).
   late final Ticker _ticker;
   final _Repaint _repaint = _Repaint();
   Duration _lastTick = Duration.zero;
   Offset? _stickOrigin;
   Offset? _stickPosition;
+  Offset? _pressOrigin;
   int _pointerId = -1;
   bool _finishHandled = false;
   bool _droneStarted = false;
@@ -146,6 +146,7 @@ class _GameScreenState extends State<GameScreen>
     setState(() {
       _stickOrigin = event.localPosition;
       _stickPosition = event.localPosition;
+      _pressOrigin = event.localPosition;
     });
     widget.engine.setStick(0, 0);
   }
@@ -164,18 +165,46 @@ class _GameScreenState extends State<GameScreen>
       return;
     }
     final clamped = math.min(distance, maxRadius);
+    final dx = delta.dx / distance * (clamped / maxRadius);
+    final dy = delta.dy / distance * (clamped / maxRadius);
     widget.engine.setStick(
-      delta.dx / distance * (clamped / maxRadius),
-      delta.dy / distance * (clamped / maxRadius),
+      _steerX(dx),
+      _steerY(dy),
     );
+  }
+
+  /// Blends the stick with the movement assist. The assist only helps when the
+  /// player is not actively steering, and it fades out in the deeper realms.
+  double _steerX(double stick) {
+    if (stick.abs() > 0.3) return stick;
+    final threat = widget.engine.threatLevel * widget.engine.dodgeAssist;
+    if (threat <= 0.01) return stick;
+    return stick - widget.engine.threatDx * threat * 0.9;
+  }
+
+  double _steerY(double stick) {
+    if (stick.abs() > 0.3) return stick;
+    final threat = widget.engine.threatLevel * widget.engine.dodgeAssist;
+    if (threat <= 0.01) return stick;
+    return stick - widget.engine.threatDy * threat * 0.9;
   }
 
   void _onPointerUp(PointerEvent event) {
     if (event.pointer != _pointerId) return;
     _pointerId = -1;
+    final press = _pressOrigin;
+    final end = _stickPosition;
+
+    // A tap (small movement) is an attack towards that spot; a drag is a move.
+    if (press != null && end != null && (end - press).distance < 12) {
+      widget.engine.fireAt(end.dx, end.dy);
+      if (widget.haptics) unawaited(HapticFeedback.selectionClick());
+    }
+
     setState(() {
       _stickOrigin = null;
       _stickPosition = null;
+      _pressOrigin = null;
     });
     widget.engine.setStick(0, 0);
   }
@@ -188,6 +217,14 @@ class _GameScreenState extends State<GameScreen>
               ? 'freeze'
               : 'fast';
       unawaited(widget.audio.playPower(name));
+      if (widget.haptics) unawaited(HapticFeedback.mediumImpact());
+      setState(() {});
+    }
+  }
+
+  void _onSkill(bool Function() action, String sound) {
+    if (action()) {
+      unawaited(widget.audio.playPower(sound));
       if (widget.haptics) unawaited(HapticFeedback.mediumImpact());
       setState(() {});
     }
@@ -269,8 +306,25 @@ class _GameScreenState extends State<GameScreen>
                 builder: (context, child) => _Hud(
                   engine: engine,
                   accent: accent,
-                  onPower: _onPower,
                   onPause: _togglePause,
+                ),
+              ),
+            ),
+          ),
+          // Thumb friendly skill bar.
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SafeArea(
+              top: false,
+              child: AnimatedBuilder(
+                animation: _repaint,
+                builder: (context, child) => _SkillBar(
+                  engine: engine,
+                  accent: accent,
+                  onPower: _onPower,
+                  onSkill: _onSkill,
                 ),
               ),
             ),
@@ -317,13 +371,11 @@ class _Hud extends StatelessWidget {
   const _Hud({
     required this.engine,
     required this.accent,
-    required this.onPower,
     required this.onPause,
   });
 
   final GameEngine engine;
   final Color accent;
-  final void Function(TimePower power) onPower;
   final VoidCallback onPause;
 
   @override
@@ -375,18 +427,13 @@ class _Hud extends StatelessWidget {
             ],
           ),
         ),
+        _ThreatMeter(engine: engine),
         const SizedBox(height: 6),
       ],
     );
   }
 
   Widget _leftColumn(Color accent) {
-    final freezeReady = engine.energy >= GameEngine.freezeCost &&
-        engine.activePower == null;
-    final fastReady = engine.energy >= GameEngine.fastCost &&
-        engine.activePower == null;
-    final rewindReady = engine.rewindUses > 0;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -424,38 +471,16 @@ class _Hud extends StatelessWidget {
             ),
           ],
         ),
-        const SizedBox(height: 8),
-        Row(
-          children: <Widget>[
-            _PowerButton(
-              keyValue: const Key('power-freeze'),
-              icon: Icons.ac_unit,
-              enabled: freezeReady,
-              active: engine.activePower == TimePower.freeze,
-              accent: accent,
-              onTap: () => onPower(TimePower.freeze),
+        const SizedBox(height: 6),
+        if (engine.shieldActive)
+          const Text(
+            'SHIELD ACTIVE',
+            style: TextStyle(
+              color: Color(0xFF80D8FF),
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
             ),
-            const SizedBox(width: 6),
-            _PowerButton(
-              keyValue: const Key('power-rewind'),
-              icon: Icons.replay,
-              enabled: rewindReady,
-              active: false,
-              accent: accent,
-              badge: '${engine.rewindUses}',
-              onTap: () => onPower(TimePower.rewind),
-            ),
-            const SizedBox(width: 6),
-            _PowerButton(
-              keyValue: const Key('power-fast'),
-              icon: Icons.fast_forward,
-              enabled: fastReady,
-              active: engine.activePower == TimePower.fastForward,
-              accent: accent,
-              onTap: () => onPower(TimePower.fastForward),
-            ),
-          ],
-        ),
+          ),
       ],
     );
   }
@@ -555,64 +580,229 @@ class _PowerButton extends StatelessWidget {
   const _PowerButton({
     required this.keyValue,
     required this.icon,
+    required this.label,
     required this.enabled,
     required this.active,
     required this.accent,
     required this.onTap,
     this.badge,
+    this.progress,
   });
 
   final Key keyValue;
   final IconData icon;
+  final String label;
   final bool enabled;
   final bool active;
   final Color accent;
   final VoidCallback onTap;
   final String? badge;
 
+  /// 0..1 recharge ring for dash and shield.
+  final double? progress;
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       key: keyValue,
       onTap: enabled ? onTap : null,
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: active
-              ? accent.withValues(alpha: 0.35)
-              : KalchakraColors.cosmic.withValues(alpha: 0.75),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: active
-                ? accent
-                : enabled
-                    ? KalchakraColors.gold.withValues(alpha: 0.5)
-                    : Colors.white24,
-          ),
-        ),
-        child: Stack(
-          alignment: Alignment.center,
-          children: <Widget>[
-            Icon(
-              icon,
-              size: 18,
-              color: enabled ? KalchakraColors.gold : Colors.white24,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: active
+                  ? accent.withValues(alpha: 0.35)
+                  : KalchakraColors.cosmic.withValues(alpha: 0.75),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: active
+                    ? accent
+                    : enabled
+                        ? KalchakraColors.gold.withValues(alpha: 0.5)
+                        : Colors.white24,
+              ),
             ),
-            if (badge != null)
-              Positioned(
-                right: 3,
-                bottom: 2,
-                child: Text(
-                  badge!,
-                  style: const TextStyle(
-                    color: KalchakraColors.parchment,
-                    fontSize: 9,
+            child: Stack(
+              alignment: Alignment.center,
+              children: <Widget>[
+                if (progress != null && progress! < 1)
+                  Positioned.fill(
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: CircularProgressIndicator(
+                        value: progress,
+                        strokeWidth: 2,
+                        backgroundColor: Colors.transparent,
+                        valueColor: AlwaysStoppedAnimation<Color>(accent),
+                      ),
+                    ),
                   ),
+                Icon(
+                  icon,
+                  size: 20,
+                  color: enabled ? KalchakraColors.gold : Colors.white24,
+                ),
+                if (badge != null)
+                  Positioned(
+                    right: 4,
+                    bottom: 2,
+                    child: Text(
+                      badge!,
+                      style: const TextStyle(
+                        color: KalchakraColors.parchment,
+                        fontSize: 9,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 8,
+              letterSpacing: 0.5,
+              color: enabled ? KalchakraColors.parchment : Colors.white24,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Real time readout of where incoming fire comes from.
+class _ThreatMeter extends StatelessWidget {
+  const _ThreatMeter({required this.engine});
+
+  final GameEngine engine;
+
+  @override
+  Widget build(BuildContext context) {
+    final level = engine.threatLevel;
+    if (level < 0.02) return const SizedBox.shrink();
+    final angle = math.atan2(engine.threatDy, engine.threatDx);
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, left: 14),
+      child: Row(
+        children: <Widget>[
+          Transform.rotate(
+            angle: angle,
+            child: const Icon(
+              Icons.navigation,
+              size: 14,
+              color: KalchakraColors.temporalRed,
+            ),
+          ),
+          const SizedBox(width: 6),
+          const Text(
+            'INCOMING',
+            style: TextStyle(
+              color: KalchakraColors.temporalRed,
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 70,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: level,
+                minHeight: 4,
+                backgroundColor: Colors.white12,
+                valueColor: const AlwaysStoppedAnimation<Color>(
+                  KalchakraColors.temporalRed,
                 ),
               ),
-          ],
-        ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Bottom bar with the time powers and the two newer skills.
+class _SkillBar extends StatelessWidget {
+  const _SkillBar({
+    required this.engine,
+    required this.accent,
+    required this.onPower,
+    required this.onSkill,
+  });
+
+  final GameEngine engine;
+  final Color accent;
+  final void Function(TimePower power) onPower;
+  final void Function(bool Function() action, String sound) onSkill;
+
+  @override
+  Widget build(BuildContext context) {
+    final freezeReady =
+        engine.energy >= GameEngine.freezeCost && engine.activePower == null;
+    final fastReady =
+        engine.energy >= GameEngine.fastCost && engine.activePower == null;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: <Widget>[
+          _PowerButton(
+            keyValue: const Key('power-freeze'),
+            icon: Icons.ac_unit,
+            label: 'FREEZE',
+            enabled: freezeReady,
+            active: engine.activePower == TimePower.freeze,
+            accent: accent,
+            onTap: () => onPower(TimePower.freeze),
+          ),
+          _PowerButton(
+            keyValue: const Key('power-rewind'),
+            icon: Icons.replay,
+            label: 'REWIND',
+            enabled: engine.rewindUses > 0,
+            active: false,
+            accent: accent,
+            badge: '${engine.rewindUses}',
+            onTap: () => onPower(TimePower.rewind),
+          ),
+          _PowerButton(
+            keyValue: const Key('power-fast'),
+            icon: Icons.fast_forward,
+            label: 'FAST',
+            enabled: fastReady,
+            active: engine.activePower == TimePower.fastForward,
+            accent: accent,
+            onTap: () => onPower(TimePower.fastForward),
+          ),
+          _PowerButton(
+            keyValue: const Key('skill-dash'),
+            icon: Icons.bolt,
+            label: 'DASH',
+            enabled: engine.dashReady,
+            active: false,
+            accent: accent,
+            progress: engine.dashProgress,
+            onTap: () => onSkill(engine.activateDash, 'fast'),
+          ),
+          _PowerButton(
+            keyValue: const Key('skill-shield'),
+            icon: Icons.shield,
+            label: 'SHIELD',
+            enabled: engine.shieldReady,
+            active: engine.shieldActive,
+            accent: const Color(0xFF80D8FF),
+            progress: engine.shieldProgress,
+            onTap: () => onSkill(engine.activateShield, 'freeze'),
+          ),
+        ],
       ),
     );
   }

@@ -25,7 +25,7 @@ class Realm {
   final int background;
 }
 
-/// The seven mythological realms, in play order.
+/// The nine mythological realms, in play order.
 const List<Realm> kRealms = <Realm>[
   Realm(
     name: 'SATYA LOKA',
@@ -64,6 +64,18 @@ const List<Realm> kRealms = <Realm>[
     background: 0xFF1A0A2E,
   ),
   Realm(
+    name: 'SWARGA LOKA',
+    subtitle: 'Realm of Light',
+    color: 0xFFFFE082,
+    background: 0xFF2E2A0A,
+  ),
+  Realm(
+    name: 'NARAKA LOKA',
+    subtitle: 'Realm of Fire and Shadow',
+    color: 0xFFB71C1C,
+    background: 0xFF1A0505,
+  ),
+  Realm(
     name: 'MAHAKAAL LOKA',
     subtitle: 'Realm of Time',
     color: 0xFFFF3366,
@@ -76,12 +88,15 @@ const String kLore = '''
 KALCHAKRA — The Time Weaver's Paradox
 
 The cosmic wheel of time has shattered into fragments. You are the last Time
-Weaver, threading the seven mythological realms to gather the pieces before
-the wheel can never be rebuilt.
+Weaver, threading the nine mythological realms to gather the pieces before the
+wheel can never be rebuilt.
 
 Every realm you clear pulls you deeper into the wheel. Enemies leave echoes of
 where they were — your own footsteps can be rewound, and time itself can be
 frozen or hurried.
+
+In the deeper lokas the weavers fight back: they read your shots and slip aside,
+and their aim leads where you are going instead of where you are.
 
 Your actions echo through time. Choose wisely, Weaver.
 ''';

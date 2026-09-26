@@ -36,6 +36,30 @@ Enemy _enemyAt(GameEngine engine, double x, double y, {int hp = 1}) {
   return enemy;
 }
 
+Enemy _hostile(
+  GameEngine engine,
+  EnemyType type, {
+  double x = 0,
+  double y = 0,
+  double speed = 0,
+  double preferredDistance = 0,
+  double strafeSkill = 0,
+}) {
+  final enemy = Enemy(
+    x: x,
+    y: y,
+    type: type,
+    hp: 99,
+    radius: 12,
+    speed: speed,
+    color: 0xFFFF3366,
+    preferredDistance: preferredDistance,
+    strafeSkill: strafeSkill,
+  );
+  engine.enemies.add(enemy);
+  return enemy;
+}
+
 void main() {
   group('run flow', () {
     test('starts in the first realm and becomes playable after the intro', () {
@@ -45,7 +69,7 @@ void main() {
       expect(engine.phase, GamePhase.realmTransition);
       expect(engine.realmIndex, 0);
       expect(engine.realm.name, 'SATYA LOKA');
-      expect(kRealms.length, 7);
+      expect(kRealms.length, 9);
 
       _skipIntro(engine);
       expect(engine.phase, GamePhase.playing);
@@ -280,7 +304,7 @@ void main() {
     });
 
     test('realm goals get harder deeper in', () {
-      expect(kRealms.length, 7);
+      expect(kRealms.length, 9);
       final engine = GameEngine(random: math.Random(15));
       engine.startRun();
       final first = engine.realmGoal;
@@ -413,6 +437,363 @@ void main() {
         completed: false,
       );
       expect(save.unlockedRealm, 5);
+    });
+  });
+
+  group('enemy fire', () {
+    test('shooters shoot back at the player', () {
+      final engine = GameEngine(random: math.Random(30));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.invincible = true;
+
+      _hostile(
+        engine,
+        EnemyType.shooter,
+        x: engine.playerX + 200,
+        y: engine.playerY,
+        speed: 0,
+      );
+
+      // The first shot lands after the 2.1s shooter cadence.
+      var fired = false;
+      for (var i = 0; i < 60; i++) {
+        engine.update(0.05);
+        if (engine.bullets.any((b) => !b.fromPlayer)) {
+          fired = true;
+          break;
+        }
+      }
+
+      expect(
+        fired,
+        isTrue,
+        reason: 'shooters must actually put bullets in the air',
+      );
+    });
+
+    test('charging basics also shoot, so standing still is not safe', () {
+      final engine = GameEngine(random: math.Random(31));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+
+      _hostile(
+        engine,
+        EnemyType.basic,
+        x: engine.playerX + 200,
+        y: engine.playerY,
+        speed: 0,
+      );
+
+      var fired = false;
+      for (var i = 0; i < 120; i++) {
+        engine.update(0.05);
+        if (engine.bullets.any((b) => !b.fromPlayer)) {
+          fired = true;
+          break;
+        }
+      }
+
+      expect(fired, isTrue);
+    });
+
+    test('a shot telegraphs before it leaves the barrel', () {
+      final engine = GameEngine(random: math.Random(32));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.invincible = true;
+
+      final enemy = _hostile(
+        engine,
+        EnemyType.shooter,
+        x: engine.playerX + 200,
+        y: engine.playerY,
+        speed: 0,
+      );
+
+      for (var i = 0; i < 50; i++) {
+        engine.update(0.05);
+        if (enemy.aimFlash > 0) break;
+      }
+
+      expect(enemy.aimFlash, greaterThan(0));
+    });
+
+    test('weavers fan a burst out sideways', () {
+      final engine = GameEngine(random: math.Random(33));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.invincible = true;
+
+      _hostile(
+        engine,
+        EnemyType.weaver,
+        x: engine.playerX + 200,
+        y: engine.playerY,
+        speed: 0,
+      );
+
+      for (var i = 0; i < 60; i++) {
+        engine.update(0.05);
+        if (engine.bullets.where((b) => !b.fromPlayer).length >= 3) break;
+      }
+
+      final incoming = engine.bullets.where((b) => !b.fromPlayer).toList();
+      expect(incoming.length, greaterThanOrEqualTo(3));
+      // A fan means the shots do not all travel along one line.
+      final angles = incoming
+          .map((b) => math.atan2(b.vy - engine.playerY, b.vx - engine.playerX))
+          .toList();
+      expect(angles.toSet().length, greaterThan(1));
+    });
+
+    test('enemies hold the distance they prefer instead of gluing on', () {
+      final engine = GameEngine(random: math.Random(34));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.invincible = true;
+
+      final enemy = _hostile(
+        engine,
+        EnemyType.shooter,
+        x: engine.playerX + 60,
+        y: engine.playerY,
+        speed: 80,
+        preferredDistance: 220,
+      );
+
+      double gap(Enemy e) => math.sqrt(
+        math.pow(engine.playerX - e.x, 2) + math.pow(engine.playerY - e.y, 2),
+      );
+      final before = gap(enemy);
+      for (var i = 0; i < 30; i++) {
+        engine.update(0.05);
+      }
+      final after = gap(enemy);
+
+      expect(after, greaterThan(before));
+    });
+
+    test('enemies slide sideways instead of queueing in a straight line', () {
+      final engine = GameEngine(random: math.Random(35));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.invincible = true;
+
+      final enemy = _hostile(
+        engine,
+        EnemyType.weaver,
+        x: engine.playerX,
+        y: engine.playerY - 200,
+        speed: 90,
+        preferredDistance: 200,
+        strafeSkill: 0.6,
+      );
+
+      var maxLateral = 0.0;
+      var previousX = enemy.x;
+      for (var i = 0; i < 40; i++) {
+        engine.update(0.05);
+        maxLateral = math.max(maxLateral, (enemy.x - previousX).abs());
+        previousX = enemy.x;
+      }
+
+      expect(maxLateral, greaterThan(0.5));
+    });
+  });
+
+  group('tap to attack and drag to move', () {
+    test('fireAt shoots towards the tapped point', () {
+      final engine = GameEngine(random: math.Random(36));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+
+      expect(engine.fireAt(380, 700), isTrue);
+      expect(engine.bullets, hasLength(1));
+      final bullet = engine.bullets.first;
+      expect(bullet.vx, greaterThan(0));
+      expect(bullet.vy, greaterThan(0));
+    });
+
+    test('the tapped aim sticks even when auto aim has another target', () {
+      final engine = GameEngine(random: math.Random(37));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+
+      // An enemy up and to the left would be picked by auto aim.
+      _enemyAt(engine, engine.playerX - 150, engine.playerY - 250);
+      engine.aimAssist = true;
+
+      engine.fireAt(engine.playerX, engine.playerY + 200);
+      for (var i = 0; i < 10; i++) {
+        engine.update(0.05);
+      }
+
+      // Every follow up shot still points downwards, at the tapped spot.
+      for (final bullet in engine.bullets) {
+        expect(bullet.vy, greaterThan(0));
+      }
+      expect(engine.bullets.length, greaterThan(1));
+    });
+
+    test('firing is refused outside the playing phase', () {
+      final engine = GameEngine(random: math.Random(38));
+      expect(engine.fireAt(10, 10), isFalse);
+    });
+  });
+
+  group('dash and shield', () {
+    test('dash moves the player and then goes on cooldown', () {
+      final engine = GameEngine(random: math.Random(39));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.setStick(1, 0);
+
+      final startX = engine.playerX;
+      expect(engine.dashReady, isTrue);
+      expect(engine.activateDash(), isTrue);
+      engine.update(0.05);
+      expect(engine.playerX, greaterThan(startX));
+
+      expect(engine.dashReady, isFalse);
+      expect(engine.activateDash(), isFalse);
+      expect(engine.dashProgress, lessThan(1));
+    });
+
+    test('dash grants a moment of invulnerability', () {
+      final engine = GameEngine(random: math.Random(40));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+
+      expect(engine.activateDash(), isTrue);
+      expect(engine.invincible, isTrue);
+    });
+
+    test('the shield eats a hit instead of costing health', () {
+      final engine = GameEngine(random: math.Random(41));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.energy = 100;
+
+      expect(engine.activateShield(), isTrue);
+      expect(engine.shieldActive, isTrue);
+      expect(engine.energy, 100 - GameEngine.shieldCost);
+
+      final health = engine.health;
+      engine.bullets.add(
+        Bullet(
+          x: engine.playerX,
+          y: engine.playerY,
+          vx: 0,
+          vy: 0,
+          radius: 5,
+          fromPlayer: false,
+          color: 0xFFFF3366,
+        ),
+      );
+      engine.update(0.05);
+
+      expect(engine.health, health);
+      expect(engine.shieldActive, isFalse);
+    });
+
+    test('the shield needs energy and recharges on its own', () {
+      final engine = GameEngine(random: math.Random(42));
+      engine.startRun();
+      _skipIntro(engine);
+      engine.energy = 0;
+
+      expect(engine.activateShield(), isFalse);
+
+      engine.energy = 100;
+      expect(engine.activateShield(), isTrue);
+      expect(engine.activateShield(), isFalse);
+      for (var i = 0; i < 300; i++) {
+        engine.update(0.05);
+      }
+      expect(engine.shieldReady, isTrue);
+    });
+  });
+
+  group('threat measurement', () {
+    test('no incoming fire means no threat', () {
+      final engine = GameEngine(random: math.Random(43));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+
+      engine.update(0.05);
+      expect(engine.threatLevel, 0);
+      expect(engine.threatDx, 0);
+    });
+
+    test('threat points back at the bullet that is closing in', () {
+      final engine = GameEngine(random: math.Random(44));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+      engine.invincible = true;
+
+      // A bullet to the left of the player, travelling right.
+      engine.bullets.add(
+        Bullet(
+          x: engine.playerX - 100,
+          y: engine.playerY,
+          vx: 300,
+          vy: 0,
+          radius: 5,
+          fromPlayer: false,
+          color: 0xFFFF3366,
+        ),
+      );
+      engine.update(0.016);
+
+      expect(engine.threatLevel, greaterThan(0));
+      expect(engine.threatDx, lessThan(0));
+      expect(engine.threatDy, closeTo(0, 0.2));
+    });
+
+    test('fire travelling away from the player is not a threat', () {
+      final engine = GameEngine(random: math.Random(45));
+      engine.resize(400, 800);
+      engine.startRun();
+      _skipIntro(engine);
+
+      engine.bullets.add(
+        Bullet(
+          x: engine.playerX - 100,
+          y: engine.playerY,
+          vx: -300,
+          vy: 0,
+          radius: 5,
+          fromPlayer: false,
+          color: 0xFFFF3366,
+        ),
+      );
+      engine.update(0.016);
+
+      expect(engine.threatLevel, 0);
+    });
+
+    test('the movement assist fades out deeper in the realms', () {
+      final engine = GameEngine(random: math.Random(46));
+      engine.startRun();
+      final shallow = engine.dodgeAssist;
+
+      engine.realmIndex = kRealms.length - 1;
+      expect(engine.dodgeAssist, lessThan(shallow));
+      expect(engine.dodgeAssist, greaterThan(0));
     });
   });
 }

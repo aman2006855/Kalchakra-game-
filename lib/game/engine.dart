@@ -6,7 +6,7 @@ import 'realms.dart';
 enum GamePhase { idle, playing, paused, realmTransition, gameOver }
 
 /// Enemy archetypes that spawn in the realms.
-enum EnemyType { basic, shooter, fast, wraith }
+enum EnemyType { basic, shooter, fast, wraith, weaver }
 
 /// Power-up kinds dropped by defeated enemies.
 enum DropType { energy, health, rewind }
@@ -70,6 +70,8 @@ class Enemy {
     required this.speed,
     required this.color,
     this.wobbleSeed = 0,
+    this.preferredDistance = 0,
+    this.strafeSkill = 0.2,
   });
 
   double x;
@@ -84,6 +86,29 @@ class Enemy {
 
   /// Phase offset that gives each enemy its own weaving approach.
   double wobbleSeed;
+
+  /// How far the enemy tries to stay from the player. 0 means "charge in".
+  final double preferredDistance;
+
+  /// 0..1 chance of slipping away from an incoming shot.
+  final double strafeSkill;
+
+  /// +1 / -1 side the enemy is currently weaving towards.
+  int strafeDir = 1;
+  double strafeTimer = 0;
+
+  /// > 0 while the enemy is actively dodging, used for the dodge tell.
+  double dodgeFlash = 0;
+
+  /// > 0 while the enemy is winding up a shot, used for the aim tell so the
+  /// player can read where the next bullet is coming from.
+  double aimFlash = 0;
+
+  /// Shots left in the current burst.
+  int burstLeft = 0;
+
+  /// Small delay between two shots of the same burst.
+  double burstTimer = 0;
 
   /// Recent positions, drawn as fading echoes.
   final List<double> echoX = <double>[];
@@ -163,6 +188,30 @@ class GameEngine {
 
   int rewindUses = startingRewindUses;
 
+  // Dash + shield
+  static const double dashCooldown = 2.4;
+  static const double dashDuration = 0.18;
+  static const double dashSpeed = 900;
+  static const double shieldCost = 25;
+  static const double shieldRecharge = 11;
+
+  double _dashLeft = 0;
+  double _dashCooldownLeft = 0;
+  double _dashX = 0;
+  double _dashY = 0;
+  double _shieldTimer = 0;
+  double _shieldRechargeLeft = 0;
+
+  // Aim lock set by tapping a target.
+  double? _aimLockX;
+  double? _aimLockY;
+  double _aimLockLeft = 0;
+
+  // Real time threat measurement: where incoming fire comes from.
+  double _threatX = 0;
+  double _threatY = 0;
+  double _threatLevel = 0;
+
   // time power
   TimePower? activePower;
   double _powerLeft = 0;
@@ -187,6 +236,8 @@ class GameEngine {
   double spawnTimer = 0;
   double _comboLeft = 0;
   double _fireCooldown = 0;
+  double _lastFireX = 0;
+  double _lastFireY = -1;
   double _shake = 0;
   double _shakeX = 0;
   double _shakeY = 0;
@@ -196,8 +247,6 @@ class GameEngine {
   double _historyTimer = 0;
 
   // input
-  double _keyX = 0;
-  double _keyY = 0;
   double _stickX = 0;
   double _stickY = 0;
   bool _fireHeld = false;
@@ -237,6 +286,33 @@ class GameEngine {
       _powerDuration <= 0 ? 0 : (_powerLeft / _powerDuration).clamp(0.0, 1.0);
 
   bool get isFlashing => invincible && (_invincibleLeft * 12).floor().isEven;
+
+  /// Unit vector pointing towards the incoming enemy fire (screen space).
+  double get threatDx => _threatX;
+
+  double get threatDy => _threatY;
+
+  /// 0..1 — how dangerous the current incoming fire is.
+  double get threatLevel => _threatLevel;
+
+  bool get shieldActive => _shieldTimer > 0;
+
+  double get shieldProgress =>
+      _shieldRechargeLeft <= 0 ? 1 : (1 - _shieldRechargeLeft / shieldRecharge).clamp(0.0, 1.0);
+
+  double get dashProgress =>
+      _dashCooldownLeft <= 0 ? 1 : (1 - _dashCooldownLeft / dashCooldown).clamp(0.0, 1.0);
+
+  bool get dashReady => _dashCooldownLeft <= 0;
+
+  bool get shieldReady => _shieldRechargeLeft <= 0 && energy >= shieldCost;
+
+  /// How strongly the movement assist nudges the player away from fire.
+  /// Deeper realms get less help, so difficulty still scales.
+  double get dodgeAssist {
+    final depth = realmIndex / (kRealms.length - 1);
+    return (1 - 0.65 * depth).clamp(0.25, 1.0);
+  }
 
   /// Kills needed to clear the current realm.
   void resize(double width, double height) {
@@ -322,18 +398,15 @@ class GameEngine {
     phase = GamePhase.idle;
     _stickX = 0;
     _stickY = 0;
-    _keyX = 0;
-    _keyY = 0;
     _fireHeld = false;
     _aimX = null;
     _aimY = null;
   }
 
   // ---------------------------------------------------------------- input
-  void setKeyboard(double dx, double dy) {
-    _keyX = dx;
-    _keyY = dy;
-  }
+  // This is a phone game: every action is driven by touch. The stick is the
+  // floating joystick from a drag, a tap is an attack and the skill bar covers
+  // the rest.
 
   void setStick(double dx, double dy) {
     _stickX = dx;
@@ -350,8 +423,6 @@ class GameEngine {
   }
 
   void releaseAllInput() {
-    _keyX = 0;
-    _keyY = 0;
     _stickX = 0;
     _stickY = 0;
     _fireHeld = false;
@@ -388,6 +459,60 @@ class GameEngine {
     activePower = power;
     _powerDuration = duration;
     _powerLeft = duration;
+  }
+
+  // ---------------------------------------------------------------- skills
+  /// Fires at a point immediately and locks the aim there for a moment, which
+  /// is what a tap on the screen does.
+  bool fireAt(double x, double y) {
+    if (phase != GamePhase.playing) return false;
+    _aimLockX = x;
+    _aimLockY = y;
+    _aimLockLeft = 1.6;
+    return _fire(x, y);
+  }
+
+  /// Quick burst of movement with a sliver of invulnerability.
+  bool activateDash() {
+    if (phase != GamePhase.playing || _dashCooldownLeft > 0) return false;
+    var dx = _stickX;
+    var dy = _stickY;
+    if (math.sqrt(dx * dx + dy * dy) < 0.1) {
+      // No input: dash away from the incoming fire, otherwise forward.
+      final length = math.sqrt(_threatX * _threatX + _threatY * _threatY);
+      if (length > 0.05) {
+        dx = -_threatX / length;
+        dy = -_threatY / length;
+      } else {
+        dx = 0;
+        dy = 1;
+      }
+    }
+    final length = math.sqrt(dx * dx + dy * dy);
+    if (length > 0.001) {
+      _dashX = dx / length;
+      _dashY = dy / length;
+    } else {
+      _dashX = 0;
+      _dashY = 0;
+    }
+    _dashLeft = dashDuration;
+    _dashCooldownLeft = dashCooldown;
+    invincible = true;
+    _invincibleLeft = math.max(_invincibleLeft, 0.3);
+    _emitEvent(const GameEvent(GameEventType.powerActivated, value: 3));
+    return true;
+  }
+
+  /// Absorbs incoming hits for a few seconds, then recharges.
+  bool activateShield() {
+    if (phase != GamePhase.playing) return false;
+    if (_shieldRechargeLeft > 0 || energy < shieldCost) return false;
+    energy -= shieldCost;
+    _shieldTimer = 2.6;
+    _shieldRechargeLeft = shieldRecharge;
+    _emitEvent(const GameEvent(GameEventType.powerActivated, value: 4));
+    return true;
   }
 
   void _doRewind() {
@@ -429,15 +554,79 @@ class GameEngine {
 
     elapsed += dt;
     _updatePower(dt);
+    _updateCooldowns(dt);
     _updatePlayer(dt);
     _updateSpawning(dt);
     _updateEnemies(dt);
     _updateBullets(dt);
+    _updateThreat();
     _updateDrops(dt);
     _updateCombo(dt);
     _updateParticles(dt);
     _updateShake(dt);
     _checkRealmProgress();
+  }
+
+  void _updateCooldowns(double dt) {
+    if (_dashLeft > 0) {
+      _dashLeft -= dt;
+      if (_dashLeft <= 0) _dashLeft = 0;
+    }
+    if (_dashCooldownLeft > 0) {
+      _dashCooldownLeft = math.max(0, _dashCooldownLeft - dt);
+    }
+    if (_shieldTimer > 0) {
+      _shieldTimer = math.max(0, _shieldTimer - dt);
+    }
+    if (_shieldRechargeLeft > 0) {
+      _shieldRechargeLeft = math.max(0, _shieldRechargeLeft - dt);
+    }
+    if (_aimLockLeft > 0) {
+      _aimLockLeft = math.max(0, _aimLockLeft - dt);
+      if (_aimLockLeft == 0) {
+        _aimLockX = null;
+        _aimLockY = null;
+      }
+    }
+  }
+
+  /// Measures where the incoming enemy fire comes from, so the movement assist
+  /// (and the HUD indicator) know which side is dangerous right now.
+  void _updateThreat() {
+    final radius = 150.0 * scale;
+    var sumX = 0.0;
+    var sumY = 0.0;
+    var total = 0.0;
+    for (final bullet in bullets) {
+      if (bullet.fromPlayer) continue;
+      final dx = bullet.x - playerX;
+      final dy = bullet.y - playerY;
+      final distance = math.sqrt(dx * dx + dy * dy);
+      if (distance > radius || distance < 0.001) continue;
+      // Only count fire that is actually closing in on the player.
+      final toward = (bullet.vx * -dx + bullet.vy * -dy) / (distance * (bullet.vx.abs() + bullet.vy.abs()).clamp(0.001, double.infinity));
+      if (toward <= 0) continue;
+      final weight = (1 - distance / radius) * toward;
+      sumX += dx / distance * weight;
+      sumY += dy / distance * weight;
+      total += weight;
+    }
+    if (total <= 0.001) {
+      _threatX = 0;
+      _threatY = 0;
+      _threatLevel = 0;
+      return;
+    }
+    final length = math.sqrt(sumX * sumX + sumY * sumY);
+    if (length <= 0.001) {
+      _threatX = 0;
+      _threatY = 0;
+      _threatLevel = 0;
+      return;
+    }
+    _threatX = sumX / length;
+    _threatY = sumY / length;
+    _threatLevel = total.clamp(0.0, 1.0);
   }
 
   void _updatePower(double dt) {
@@ -451,8 +640,8 @@ class GameEngine {
   }
 
   void _updatePlayer(double dt) {
-    var mx = _keyX + _stickX;
-    var my = _keyY + _stickY;
+    var mx = _stickX;
+    var my = _stickY;
     final length = math.sqrt(mx * mx + my * my);
     if (length > 1) {
       mx /= length;
@@ -463,8 +652,14 @@ class GameEngine {
     final smoothing = math.min(1.0, dt * 12);
     _velX += (mx * speed - _velX) * smoothing;
     _velY += (my * speed - _velY) * smoothing;
-    playerX += _velX * dt;
-    playerY += _velY * dt;
+
+    if (_dashLeft > 0) {
+      playerX += _dashX * dashSpeed * scale * dt;
+      playerY += _dashY * dashSpeed * scale * dt;
+    } else {
+      playerX += _velX * dt;
+      playerY += _velY * dt;
+    }
 
     final r = playerRadius;
     playerX = playerX.clamp(r, _width - r).toDouble();
@@ -506,8 +701,8 @@ class GameEngine {
     final wantsFire = aimAssist || _fireHeld;
     if (!wantsFire) return;
 
-    double? targetX = _aimX;
-    double? targetY = _aimY;
+    double? targetX = _aimLockLeft > 0 ? _aimLockX : _aimX;
+    double? targetY = _aimLockLeft > 0 ? _aimLockY : _aimY;
 
     if (aimAssist && targetX == null) {
       final enemy = _nearestEnemy();
@@ -517,14 +712,26 @@ class GameEngine {
       }
     }
     if (targetX == null || targetY == null) return;
-    if (_fireCooldown > 0) return;
+    _fire(targetX, targetY);
+  }
 
-    final dx = targetX - playerX;
-    final dy = targetY - playerY;
-    final distance = math.sqrt(dx * dx + dy * dy);
-    if (distance < 1) return;
+  /// Spawns one player bullet towards [targetX], [targetY].
+  bool _fire(double targetX, double targetY) {
+    if (_fireCooldown > 0) return false;
+    var dx = targetX - playerX;
+    var dy = targetY - playerY;
+    var distance = math.sqrt(dx * dx + dy * dy);
+    if (distance < 1) {
+      // Tapped right on top of the weaver: keep firing the way we were already
+      // aiming instead of swallowing the shot.
+      dx = _lastFireX;
+      dy = _lastFireY;
+      distance = 1;
+    }
 
     _fireCooldown = fireInterval;
+    _lastFireX = dx / distance;
+    _lastFireY = dy / distance;
     final speed = 640 * scale;
     bullets.add(
       Bullet(
@@ -538,6 +745,7 @@ class GameEngine {
       ),
     );
     _emitEvent(GameEvent(GameEventType.shot, x: playerX, y: playerY));
+    return true;
   }
 
   Enemy? _nearestEnemy() {
@@ -589,23 +797,41 @@ class GameEngine {
     final int hp;
     final double radius;
     final double speed;
+    final double preferred;
+    final double strafe;
     switch (type) {
       case EnemyType.wraith:
         hp = 6;
         radius = 26 * scale;
         speed = 70 * scale * difficulty;
+        preferred = 20 * scale;
+        strafe = 0.10;
       case EnemyType.shooter:
         hp = 2;
         radius = 17 * scale;
-        speed = 85 * scale * difficulty;
+        speed = 95 * scale * difficulty;
+        preferred = 250 * scale;
+        strafe = 0.34;
       case EnemyType.fast:
         hp = 1;
         radius = 14 * scale;
         speed = 175 * scale * difficulty;
+        preferred = 90 * scale;
+        strafe = 0.42;
       case EnemyType.basic:
         hp = 1;
         radius = 17 * scale;
         speed = 105 * scale * difficulty;
+        // Basic enemies close in and trade: they ram and shoot.
+        preferred = 0;
+        strafe = 0.24;
+      case EnemyType.weaver:
+        hp = 4;
+        radius = 21 * scale;
+        speed = 110 * scale * difficulty;
+        // Held at mid range, constantly sliding sideways.
+        preferred = 210 * scale;
+        strafe = 0.55;
     }
 
     enemies.add(
@@ -618,26 +844,45 @@ class GameEngine {
         speed: speed,
         color: realm.color,
         wobbleSeed: _random.nextDouble() * math.pi * 2,
+        preferredDistance: preferred,
+        strafeSkill: (strafe + 0.05 * realmIndex).clamp(0.0, 0.85),
       ),
     );
   }
 
   EnemyType _rollEnemyType() {
     final roll = _random.nextDouble();
+    // Deeper realms mix in more shooters and weavers, so the incoming fire
+    // gets denser and less predictable.
     final wraithChance = realmIndex >= 2 ? 0.08 + 0.035 * realmIndex : 0.0;
+    final shooterChance = (0.24 + 0.04 * realmIndex).clamp(0.0, 0.45);
+    final weaverChance = realmIndex >= 2 ? 0.06 + 0.035 * realmIndex : 0.0;
     if (roll < wraithChance) return EnemyType.wraith;
-    if (roll < wraithChance + 0.30) return EnemyType.shooter;
-    if (roll < wraithChance + 0.55) return EnemyType.fast;
+    if (roll < wraithChance + weaverChance) return EnemyType.weaver;
+    if (roll < wraithChance + weaverChance + shooterChance) {
+      return EnemyType.shooter;
+    }
+    if (roll < wraithChance + weaverChance + shooterChance + 0.24) {
+      return EnemyType.fast;
+    }
     return EnemyType.basic;
   }
 
   void _updateEnemies(double dt) {
     final mult = worldMultiplier;
     final margin = 90.0 * scale;
+    // Deeper realms weave and dodge more often.
+    final dodgeSkill = (0.18 + 0.11 * realmIndex).clamp(0.0, 0.85);
 
     for (var i = enemies.length - 1; i >= 0; i--) {
       final enemy = enemies[i];
       enemy.life += dt;
+      if (enemy.dodgeFlash > 0) {
+        enemy.dodgeFlash = math.max(0, enemy.dodgeFlash - dt);
+      }
+      if (enemy.aimFlash > 0) {
+        enemy.aimFlash = math.max(0, enemy.aimFlash - dt);
+      }
 
       // Echo trail, a few samples per second.
       if (_random.nextDouble() < dt * 4) {
@@ -652,21 +897,51 @@ class GameEngine {
       var dx = playerX - enemy.x;
       var dy = playerY - enemy.y;
       final distance = math.sqrt(dx * dx + dy * dy);
-      if (distance > 0.001) {
-        final wobble = math.sin(elapsed * 2 + enemy.wobbleSeed) * 0.35;
-        final angle = math.atan2(dy, dx) + wobble;
-        enemy.x += math.cos(angle) * enemy.speed * mult * dt;
-        enemy.y += math.sin(angle) * enemy.speed * mult * dt;
-      }
 
-      if (enemy.type == EnemyType.shooter) {
-        enemy.shootTimer += dt;
-        final interval = math.max(0.9, 2.2 - 0.15 * realmIndex);
-        if (enemy.shootTimer >= interval) {
-          enemy.shootTimer = 0;
-          _enemyShoot(enemy, distance);
+      if (distance > 0.001) {
+        // Steer towards the ring the enemy wants to sit on.
+        final radial = distance <= enemy.preferredDistance
+            ? -0.35
+            : (distance - enemy.preferredDistance) / distance;
+        // Weave sideways so they do not queue up in a straight line.
+        enemy.strafeTimer -= dt;
+        if (enemy.strafeTimer <= 0) {
+          enemy.strafeTimer = 0.7 + _random.nextDouble() * 1.6;
+          enemy.strafeDir = _random.nextDouble() < 0.5 ? -1 : 1;
+        }
+        final wobble = math.sin(elapsed * 2 + enemy.wobbleSeed) * 0.25;
+        final weave = (0.55 + enemy.strafeSkill) + wobble;
+
+        var dirX = dx / distance * radial + (-dy / distance) * enemy.strafeDir * weave;
+        var dirY = dy / distance * radial + (dx / distance) * enemy.strafeDir * weave;
+
+        // Slip away from a shot that is about to land on them.
+        final incoming = _incomingShot(enemy);
+        if (incoming != null && _random.nextDouble() < dodgeSkill * 3 * dt) {
+          final length = math.sqrt(incoming.vx * incoming.vx + incoming.vy * incoming.vy);
+          if (length > 0.001) {
+            final perpX = -incoming.vy / length;
+            final perpY = incoming.vx / length;
+            final side = (incoming.x - enemy.x) * perpX +
+                    (incoming.y - enemy.y) * perpY >=
+                0
+                ? 1.0
+                : -1.0;
+            dirX += perpX * side * 2.2;
+            dirY += perpY * side * 2.2;
+            enemy.dodgeFlash = 0.18;
+          }
+        }
+
+        final dirLength = math.sqrt(dirX * dirX + dirY * dirY);
+        if (dirLength > 0.001) {
+          final boost = enemy.dodgeFlash > 0 ? 1.9 : 1.0;
+          enemy.x += dirX / dirLength * enemy.speed * mult * dt * boost;
+          enemy.y += dirY / dirLength * enemy.speed * mult * dt * boost;
         }
       }
+
+      _updateEnemyFire(enemy, dt, distance);
 
       // Contact damage.
       if (!invincible && distance < playerRadius + enemy.radius) {
@@ -688,24 +963,132 @@ class GameEngine {
     }
   }
 
+  /// The player bullet closest to [enemy] that is currently heading at it.
+  Bullet? _incomingShot(Enemy enemy) {
+    Bullet? best;
+    var bestTime = double.infinity;
+    for (final bullet in bullets) {
+      if (!bullet.fromPlayer) continue;
+      final dx = enemy.x - bullet.x;
+      final dy = enemy.y - bullet.y;
+      final speed = math.sqrt(bullet.vx * bullet.vx + bullet.vy * bullet.vy);
+      if (speed <= 0.001) continue;
+      // Time until the bullet reaches the enemy's current position.
+      final closing = (dx * bullet.vx + dy * bullet.vy) / (speed * speed);
+      if (closing <= 0) continue;
+      final missX = dx - bullet.vx * closing;
+      final missY = dy - bullet.vy * closing;
+      final miss = math.sqrt(missX * missX + missY * missY);
+      if (miss > enemy.radius * 3) continue;
+      if (closing < bestTime) {
+        bestTime = closing;
+        best = bullet;
+      }
+    }
+    return best;
+  }
+
+  /// Every archetype can shoot. A short wind-up ([Enemy.aimFlash]) telegraphs
+  /// the shot so the player can read the direction, and the cadence, burst size
+  /// and accuracy all scale with the realm depth.
+  void _updateEnemyFire(Enemy enemy, double dt, double distance) {
+    if (distance > 560 * scale || distance < 0.001) {
+      enemy.shootTimer = 0;
+      enemy.burstLeft = 0;
+      return;
+    }
+
+    // Burst shots keep their own short timer so the follow ups stay tight.
+    if (enemy.burstLeft > 0) {
+      enemy.burstTimer -= dt;
+      if (enemy.burstTimer <= 0) {
+        enemy.burstLeft--;
+        enemy.burstTimer = 0.14;
+        _enemyShoot(enemy, distance);
+      }
+      return;
+    }
+
+    enemy.shootTimer += dt;
+    if (enemy.shootTimer < _shotInterval(enemy)) return;
+    enemy.shootTimer = 0;
+
+    final burst = _burstSize(enemy);
+    enemy.burstLeft = burst - 1;
+    enemy.burstTimer = 0.14;
+    _enemyShoot(enemy, distance);
+  }
+
+  double _shotInterval(Enemy enemy) {
+    final depth = realmIndex;
+    switch (enemy.type) {
+      case EnemyType.weaver:
+        return math.max(0.55, 1.7 - 0.12 * depth);
+      case EnemyType.shooter:
+        return math.max(0.75, 2.1 - 0.14 * depth);
+      case EnemyType.fast:
+        return math.max(1.6, 3.2 - 0.16 * depth);
+      case EnemyType.basic:
+        return math.max(2.0, 3.6 - 0.18 * depth);
+      case EnemyType.wraith:
+        return math.max(1.2, 2.4 - 0.14 * depth);
+    }
+  }
+
+  int _burstSize(Enemy enemy) {
+    if (enemy.type != EnemyType.weaver) return 1;
+    // Weavers open up with two or three round bursts once the realm gets deep.
+    final extra = (realmIndex - 2).clamp(0, 1).toInt();
+    return 2 + extra;
+  }
+
   void _enemyShoot(Enemy enemy, double distance) {
     if (distance < 0.001) return;
+    // Telegraph the shot so the threat arrow has something honest to point at.
+    enemy.aimFlash = 0.3;
+    // Lead the shot slightly so the player cannot just stand still forever.
+    final lead = (0.18 + 0.05 * realmIndex).clamp(0.0, 0.6);
     final dx = playerX - enemy.x;
     final dy = playerY - enemy.y;
     final d = math.sqrt(dx * dx + dy * dy);
     if (d < 0.001) return;
-    final speed = 320 * scale;
-    bullets.add(
-      Bullet(
-        x: enemy.x,
-        y: enemy.y,
-        vx: dx / d * speed,
-        vy: dy / d * speed,
-        radius: 6 * scale,
-        fromPlayer: false,
-        color: 0xFFFF3366,
-      ),
-    );
+    final speed = 320 * scale * (1 + 0.06 * realmIndex);
+    final baseX = (dx + _velX * lead) / d * speed;
+    final baseY = (dy + _velY * lead) / d * speed;
+
+    // Weavers fan their burst out sideways so a single sidestep is not enough.
+    final spread = enemy.type == EnemyType.weaver ? 0.20 : 0.0;
+    if (spread <= 0) {
+      bullets.add(
+        Bullet(
+          x: enemy.x,
+          y: enemy.y,
+          vx: baseX,
+          vy: baseY,
+          radius: 6 * scale,
+          fromPlayer: false,
+          color: 0xFFFF3366,
+        ),
+      );
+      return;
+    }
+    final fan = (elapsed * 2).floor().isEven ? 1.0 : -1.0;
+    for (var i = -1; i <= 1; i++) {
+      final angle = i * spread * fan;
+      final cosA = math.cos(angle);
+      final sinA = math.sin(angle);
+      bullets.add(
+        Bullet(
+          x: enemy.x,
+          y: enemy.y,
+          vx: baseX * cosA - baseY * sinA,
+          vy: baseX * sinA + baseY * cosA,
+          radius: 6 * scale,
+          fromPlayer: false,
+          color: 0xFFFF3366,
+        ),
+      );
+    }
   }
 
   void _updateBullets(double dt) {
@@ -842,6 +1225,13 @@ class GameEngine {
 
   void _hurtPlayer(double fromX, double fromY) {
     if (invincible || phase != GamePhase.playing) return;
+    if (_shieldTimer > 0) {
+      // The weave shield eats the hit entirely.
+      _shieldTimer = 0;
+      _burst(playerX, playerY, 0xFF80D8FF, 24);
+      _emitEvent(GameEvent(GameEventType.playerHit, value: health));
+      return;
+    }
     health--;
     invincible = true;
     _invincibleLeft = 1;

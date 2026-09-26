@@ -1,9 +1,13 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kaal_chakra_game/game/audio.dart';
+import 'package:kaal_chakra_game/game/engine.dart';
 import 'package:kaal_chakra_game/game/renderer.dart';
 import 'package:kaal_chakra_game/game/storage.dart';
 import 'package:kaal_chakra_game/main.dart';
+import 'package:kaal_chakra_game/ui/game_screen.dart';
 
 void main() {
   testWidgets('title -> menu -> game -> pause -> resume works',
@@ -156,5 +160,96 @@ void main() {
 
     expect(find.text('BHUMI LOKA'), findsWidgets);
     expect(find.byKey(const Key('score')), findsOneWidget);
+  });
+
+  testWidgets('a tap attacks and a drag moves, never both',
+      (WidgetTester tester) async {
+    final engine = GameEngine(random: math.Random(99));
+    engine.resize(400, 800);
+    engine.startRun();
+    for (var i = 0; i < 80; i++) {
+      engine.update(0.05);
+    }
+    engine.enemies.clear();
+    engine.bullets.clear();
+    engine.spawnTimer = 5;
+    engine.aimAssist = false;
+    // Drain the fire cooldown left over from the intro auto fire.
+    for (var i = 0; i < 10; i++) {
+      engine.update(0.05);
+    }
+    engine.bullets.clear();
+    engine.enemies.clear();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GameScreen(
+          engine: engine,
+          audio: SilentAudioService(),
+          onRunFinished: (_) {},
+          onQuit: () {},
+          aimAssist: false,
+          haptics: false,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final startX = engine.playerX;
+    final startY = engine.playerY;
+
+    // A tap: barely any travel, so it must fire and must not steer.
+    final tap = await tester.startGesture(const Offset(200, 400), pointer: 1);
+    await tester.pump(const Duration(milliseconds: 16));
+    await tap.up();
+    await tester.pump(const Duration(milliseconds: 16));
+
+    expect(engine.bullets.where((b) => b.fromPlayer), hasLength(1),
+        reason: 'a tap is an attack');
+    expect(engine.playerX, closeTo(startX, 0.01));
+    expect(engine.playerY, closeTo(startY, 0.01));
+
+    engine.bullets.clear();
+
+    // A drag: steers the weaver instead of firing.
+    final drag = await tester.startGesture(const Offset(200, 500), pointer: 2);
+    await tester.pump();
+    await drag.moveTo(const Offset(320, 700));
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await drag.up();
+    await tester.pump(const Duration(milliseconds: 16));
+
+    expect(engine.bullets.where((b) => b.fromPlayer), isEmpty,
+        reason: 'a drag is a move, not an attack');
+    expect(engine.playerX, greaterThan(startX + 10));
+    expect(engine.playerY, greaterThan(startY + 10));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the title screen fits small screens without clipping',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(320, 480);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      KalchakraApp(store: MemorySaveStore(), audio: SilentAudioService()),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull, reason: 'no layout overflow');
+
+    for (final finder in <Finder>[find.text('KALCHAKRA'), find.text('WEAVE TIME')]) {
+      final box = tester.getRect(finder);
+      expect(box.left, greaterThanOrEqualTo(0), reason: '$finder is clipped on the left');
+      expect(box.right, lessThanOrEqualTo(321), reason: '$finder is clipped on the right');
+    }
+
+    // The button still works after the layout change.
+    await tester.tap(find.byKey(const Key('weave-time')));
+    await tester.pump();
+    expect(find.text('PLAY'), findsOneWidget);
   });
 }

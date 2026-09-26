@@ -47,6 +47,7 @@ class GamePainter extends CustomPainter {
     _drawBullets(canvas);
     _drawPlayer(canvas, accent);
     _drawParticles(canvas);
+    _drawThreatArrow(canvas, size);
     _drawPointerTether(canvas);
 
     canvas.restore();
@@ -210,6 +211,46 @@ class GamePainter extends CustomPainter {
         Paint()..color = color,
       );
 
+      if (enemy.dodgeFlash > 0) {
+        // Cyan streak showing the enemy just slipped away from a shot.
+        canvas.drawCircle(
+          center,
+          enemy.radius * 1.7,
+          Paint()
+            ..color = KalchakraColors.energyCyan
+                .withValues(alpha: 0.35 * enemy.dodgeFlash / 0.18)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2,
+        );
+      }
+
+      if (enemy.aimFlash > 0) {
+        // Aim tell: the ring closes as the shot lines up on the player.
+        final t = 1 - enemy.aimFlash / 0.3;
+        canvas.drawCircle(
+          center,
+          enemy.radius * (2.6 - 1.4 * t),
+          Paint()
+            ..color = KalchakraColors.temporalRed
+                .withValues(alpha: 0.85 * (1 - t) + 0.15)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2,
+        );
+        final toPlayer = Offset(engine.playerX, engine.playerY) - center;
+        final length = toPlayer.distance;
+        if (length > 0.001) {
+          final dir = toPlayer / length;
+          canvas.drawLine(
+            center + dir * (enemy.radius + 6),
+            center + dir * (enemy.radius + 18),
+            Paint()
+              ..color = KalchakraColors.temporalRed
+              ..strokeWidth = 3
+              ..strokeCap = StrokeCap.round,
+          );
+        }
+      }
+
       if (isWraith) {
         // Armour ring shows remaining health.
         final healthRatio = (enemy.hp / 6).clamp(0.0, 1.0);
@@ -224,7 +265,8 @@ class GamePainter extends CustomPainter {
             ..strokeWidth = 3
             ..strokeCap = StrokeCap.round,
         );
-      } else if (enemy.type == EnemyType.shooter) {
+      } else if (enemy.type == EnemyType.shooter ||
+          enemy.type == EnemyType.weaver) {
         final marker = Path()
           ..moveTo(center.dx, center.dy - enemy.radius - 11)
           ..lineTo(center.dx - 6, center.dy - enemy.radius - 4)
@@ -306,6 +348,26 @@ class GamePainter extends CustomPainter {
     canvas.drawCircle(center.translate(-radius * 0.3, -radius * 0.1), eyeRadius, Paint()..color = gold);
     canvas.drawCircle(center.translate(radius * 0.3, -radius * 0.1), eyeRadius, Paint()..color = gold);
 
+    if (engine.shieldActive) {
+      canvas.drawCircle(
+        center,
+        radius + 7,
+        Paint()
+          ..color = const Color(0xFF80D8FF)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3,
+      );
+      canvas.drawCircle(
+        center,
+        radius + 7,
+        Paint()
+          ..shader = ui.Gradient.radial(center, radius + 12, <Color>[
+            const Color(0xFF80D8FF).withValues(alpha: 0.30),
+            const Color(0xFF80D8FF).withValues(alpha: 0),
+          ]),
+      );
+    }
+
     // Time power rings.
     switch (engine.activePower) {
       case TimePower.freeze:
@@ -343,6 +405,38 @@ class GamePainter extends CustomPainter {
           ..color = Color(particle.color).withValues(alpha: particle.alpha),
       );
     }
+  }
+
+  void _drawThreatArrow(Canvas canvas, Size size) {
+    final level = engine.threatLevel;
+    if (level < 0.03) return;
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = math.min(size.width, size.height) * 0.38;
+    final point = Offset(
+      center.dx + engine.threatDx * radius,
+      center.dy + engine.threatDy * radius,
+    );
+    final paint = Paint()
+      ..color = KalchakraColors.temporalRed.withValues(alpha: 0.35 + 0.5 * level)
+      ..style = PaintingStyle.fill;
+    final angle = math.atan2(engine.threatDy, engine.threatDx);
+    final tip = point + Offset(math.cos(angle), math.sin(angle)) * 10;
+    final left = point + Offset(
+          math.cos(angle + 2.6),
+          math.sin(angle + 2.6),
+        ) *
+        12;
+    final right = point + Offset(
+          math.cos(angle - 2.6),
+          math.sin(angle - 2.6),
+        ) *
+        12;
+    final path = Path()
+      ..moveTo(tip.dx, tip.dy)
+      ..lineTo(left.dx, left.dy)
+      ..lineTo(right.dx, right.dy)
+      ..close();
+    canvas.drawPath(path, paint);
   }
 
   void _drawPointerTether(Canvas canvas) {

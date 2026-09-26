@@ -36,81 +36,112 @@ class _TitleScreenState extends State<TitleScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: RadialGradient(
-            center: Alignment(0, -0.2),
-            radius: 1.2,
-            colors: <Color>[
-              KalchakraColors.cosmic,
-              KalchakraColors.voidBlack,
-            ],
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              const Spacer(),
-              SizedBox(
-                width: 240,
-                height: 240,
-                child: AnimatedBuilder(
-                  animation: _controller,
-                  builder: (context, child) => CustomPaint(
-                    painter: _ChakraPainter(progress: _controller.value),
-                  ),
-                ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          // Everything is sized from the available box so the title, the
+          // wheel and the button stay centred and never clip on narrow or
+          // short screens.
+          final height = constraints.maxHeight;
+          final width = constraints.maxWidth;
+          final chakraSize = math.min(
+            width * 0.72,
+            math.max(96.0, height * 0.34),
+          );
+          return DecoratedBox(
+            decoration: const BoxDecoration(
+              gradient: RadialGradient(
+                center: Alignment(0, -0.15),
+                radius: 1.35,
+                colors: <Color>[
+                  KalchakraColors.cosmic,
+                  KalchakraColors.voidBlack,
+                ],
               ),
-              const SizedBox(height: 28),
-              const Text(
-                'KALCHAKRA',
-                style: TextStyle(
-                  color: KalchakraColors.gold,
-                  fontSize: 42,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 6,
-                ),
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                "The Time Weaver's Paradox",
-                style: TextStyle(
-                  color: KalchakraColors.parchment,
-                  fontSize: 16,
-                  letterSpacing: 1.5,
-                ),
-              ),
-              const Spacer(),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 48),
-                child: FilledButton(
-                  key: const Key('weave-time'),
-                  onPressed: widget.onStart,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: KalchakraColors.gold,
-                    foregroundColor: KalchakraColors.voidBlack,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 42,
-                      vertical: 16,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30),
+            ),
+            child: SafeArea(
+              child: Column(
+                children: <Widget>[
+                  const Spacer(flex: 3),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: SizedBox(
+                      width: chakraSize,
+                      height: chakraSize,
+                      child: AnimatedBuilder(
+                        animation: _controller,
+                        builder: (context, child) => CustomPaint(
+                          painter: _ChakraPainter(progress: _controller.value),
+                        ),
+                      ),
                     ),
                   ),
-                  child: const Text(
-                    'WEAVE TIME',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 2,
+                  const SizedBox(height: 20),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'KALCHAKRA',
+                        maxLines: 1,
+                        style: TextStyle(
+                          color: KalchakraColors.gold,
+                          fontSize: 44,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 6,
+                          height: 1.1,
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                  const SizedBox(height: 4),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        "The Time Weaver's Paradox",
+                        maxLines: 1,
+                        style: TextStyle(
+                          color: KalchakraColors.parchment,
+                          fontSize: 15,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Spacer(flex: 2),
+                  Center(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),                        child: FilledButton(
+                          key: const Key('weave-time'),
+                          onPressed: widget.onStart,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: KalchakraColors.gold,
+                            foregroundColor: KalchakraColors.voidBlack,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 42,
+                              vertical: 16,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(30),
+                            ),
+                          ),
+                          child: const Text(
+                            'WEAVE TIME',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 2,
+                            ),
+                          ),
+                        ),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }

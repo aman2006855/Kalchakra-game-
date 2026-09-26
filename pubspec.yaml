@@ -1,5 +1,5 @@
 name: kaal_chakra_game
-description: A traditional Indian clock game - Kaal Chakra
+description: "Kalchakra - The Time Weaver's Paradox: a mythic space-shooter across seven Lokas."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -10,6 +10,8 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.6
+  shared_preferences: ^2.3.0
+  audioplayers: ^6.1.0
 
 dev_dependencies:
   flutter_test:

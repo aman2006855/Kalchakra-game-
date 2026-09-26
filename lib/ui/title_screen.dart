@@ -36,6 +36,11 @@ class _TitleScreenState extends State<TitleScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // Solid backing behind everything: even if the gradient decoration ever
+      // fails to cover the full surface (letterboxing, aspect hacks, older
+      // builds), the right band can never be pure black against a coloured
+      // gradient.
+      backgroundColor: KalchakraColors.voidBlack,
       body: LayoutBuilder(
         builder: (context, constraints) {
           // Everything is sized from the available box so the title, the
@@ -59,6 +64,7 @@ class _TitleScreenState extends State<TitleScreen>
               ),
             ),
             child: SafeArea(
+              bottom: false,
               child: Column(
                 children: <Widget>[
                   const Spacer(flex: 3),
@@ -110,31 +116,30 @@ class _TitleScreenState extends State<TitleScreen>
                     ),
                   ),
                   const Spacer(flex: 2),
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),                        child: FilledButton(
-                          key: const Key('weave-time'),
-                          onPressed: widget.onStart,
-                          style: FilledButton.styleFrom(
-                            backgroundColor: KalchakraColors.gold,
-                            foregroundColor: KalchakraColors.voidBlack,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 42,
-                              vertical: 16,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
-                            ),
-                          ),
-                          child: const Text(
-                            'WEAVE TIME',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 2,
-                            ),
-                          ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
+                    child: FilledButton(
+                      key: const Key('weave-time'),
+                      onPressed: widget.onStart,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: KalchakraColors.gold,
+                        foregroundColor: KalchakraColors.voidBlack,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 42,
+                          vertical: 16,
                         ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(30),
+                        ),
+                      ),
+                      child: const Text(
+                        'WEAVE TIME',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 2,
+                        ),
+                      ),
                     ),
                   ),
                 ],

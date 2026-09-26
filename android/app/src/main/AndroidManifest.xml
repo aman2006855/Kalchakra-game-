@@ -3,6 +3,12 @@
         android:label="Kaal Chakra Game"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!-- Let the app use the full aspect ratio on tall screens;
+             without this some OEMs letterbox the activity and shift the
+             whole layout to one side. -->
+        <meta-data
+            android:name="android.max_aspect"
+            android:value="2.4" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -11,6 +17,7 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
+            android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize">
             <!-- Specifies an Android theme to apply to this Activity as soon as
                  the Android process has started. This theme is visible to the user

@@ -144,6 +144,20 @@ risk/reward option instead of replaying from the beginning.
     realm, so a deep realm opened with its full allowance on screen. The cap now
     ramps within the realm, arrivals come in waves of one to three separated by
     a quiet beat, and each new enemy is announced as it tears onto the screen.
+20. **Passing a realm froze the game** — every sound effect went through
+    `audioplayers`, which re-prepares a media player for every play call; the
+    three-note realm chime fired three preparations back to back and stalled
+    the frame. All effects now run through an Android `SoundPool` (`soundpool`):
+    every tone is synthesised and decoded once, and playing it is a single
+    cheap stream start.
+21. **The frame still allocated on every draw** — the backdrop gradient,
+    the player's inner sheen, the shield sheen and every drop icon were
+    rebuilt per frame (each drop even laid out a fresh `TextPainter`). All of
+    them are cached now, the same way the glow shaders already were.
+22. **The title could letterbox on tall screens** — some OEMs clamp an app to
+    a 16:9 window unless it opts out, which squeezed the layout to one side.
+    The manifest now allows the full aspect ratio, and the title screen keeps
+    a solid backing colour behind its gradient.
 
 ## Project structure
 
@@ -154,7 +168,7 @@ risk/reward option instead of replaying from the beginning.
 │   │   ├── engine.dart        # Pure Dart simulation (no Flutter imports)
 │   │   ├── realms.dart        # The nine Lokas + lore text
 │   │   ├── renderer.dart      # CustomPainter for the whole world
-│   │   ├── audio.dart         # Synthesised WAV sound effects + ambient drone
+│   │   ├── audio.dart         # Synthesised WAV tones via SoundPool + drone
 │   │   └── storage.dart       # Save data model + shared_preferences store
 │   └── ui/
 │       ├── title_screen.dart     # Animated chakra title

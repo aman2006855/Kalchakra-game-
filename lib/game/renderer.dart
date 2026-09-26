@@ -51,6 +51,46 @@ class GamePainter extends CustomPainter {
     ..strokeCap = StrokeCap.round;
   static final Paint _temporalFill = Paint()..color = KalchakraColors.temporalRed;
 
+  /// Backdrop shader cached per (background, accent) pair. Rebuilding the
+  /// full-screen radial gradient on every frame was pure allocation for zero
+  /// visual change within a realm.
+  static final Map<String, Shader> _backdropCache = <String, Shader>{};
+
+  /// Drop icon glyphs are laid out once per (icon, fontSize) and reused, the
+  /// same way the glow shaders are. A fresh TextPainter + layout per drop per
+  /// frame is the single most expensive thing left in the frame.
+  static final Map<String, TextPainter> _dropIconCache = <String, TextPainter>{};
+
+  /// Unit-radius player sheen and shield sheen, drawn through canvas
+  /// transforms instead of rebuilding a shader per frame.
+  static final Paint _playerSheen = Paint()
+    ..shader = ui.Gradient.radial(
+      Offset.zero,
+      1,
+      <Color>[
+        KalchakraColors.gold.withValues(alpha: 0.28),
+        KalchakraColors.gold.withValues(alpha: 0),
+      ],
+    );
+  static final Paint _shieldSheen = Paint()
+    ..shader = ui.Gradient.radial(
+      Offset.zero,
+      1,
+      <Color>[
+        const Color(0xFF80D8FF).withValues(alpha: 0.30),
+        const Color(0xFF80D8FF).withValues(alpha: 0),
+      ],
+    );
+
+  static final Paint _shieldRing = Paint()
+    ..color = const Color(0xFF80D8FF)
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 3;
+
+  /// Tint overlays for the active time power, hoisted out of the frame.
+  static const Color _freezeTint = KalchakraColors.energyCyan;
+  static const Color _fastTint = Color(0xFFFF6432);
+
   bool get _crowded =>
       engine.enemies.length + engine.bullets.length > _crowdedThreshold;
 
@@ -95,7 +135,8 @@ class GamePainter extends CustomPainter {
 
     _drawBackground(canvas, size, background, accent);
     _drawTimeOverlay(canvas, size);
-    if (!_crowded) _drawGrid(canvas, size, accent);      _drawDrops(canvas, accent);
+    if (!_crowded) _drawGrid(canvas, size, accent);
+    _drawDrops(canvas, accent);
     _drawSpawnMarks(canvas);
     _drawEnemies(canvas);
     _drawBullets(canvas);
@@ -104,7 +145,8 @@ class GamePainter extends CustomPainter {
       _drawParticlesCheap(canvas);
     } else {
       _drawParticles(canvas);
-    }    _drawThreatArrow(canvas, size);
+    }
+    _drawThreatArrow(canvas, size);
     _drawPointerTether(canvas);
 
     canvas.restore();
@@ -112,17 +154,22 @@ class GamePainter extends CustomPainter {
 
   void _drawBackground(Canvas canvas, Size size, Color background, Color accent) {
     final rect = Offset.zero & size;
+    // The gradient only changes when the realm changes, so the shader is
+    // cached per realm pair and the paint object itself is static.
+    final key = '${background.toARGB32()}-${accent.toARGB32()}';
     final paint = Paint()
-      ..shader = RadialGradient(
-        center: const Alignment(0, -0.35),
-        radius: 1.1,
-        colors: <Color>[
-          Color.lerp(background, accent, 0.10) ?? background,
-          background,
-          KalchakraColors.voidBlack,
-        ],
-        stops: const <double>[0, 0.55, 1],
-      ).createShader(rect);
+      ..shader = _backdropCache.putIfAbsent(key, () {
+        return RadialGradient(
+          center: const Alignment(0, -0.35),
+          radius: 1.1,
+          colors: <Color>[
+            Color.lerp(background, accent, 0.10) ?? background,
+            background,
+            KalchakraColors.voidBlack,
+          ],
+          stops: const <double>[0, 0.55, 1],
+        ).createShader(rect);
+      });
     canvas.drawRect(rect, paint);
   }
 
@@ -130,9 +177,9 @@ class GamePainter extends CustomPainter {
     Color? tint;
     switch (engine.activePower) {
       case TimePower.freeze:
-        tint = KalchakraColors.energyCyan;
+        tint = _freezeTint;
       case TimePower.fastForward:
-        tint = const Color(0xFFFF6432);
+        tint = _fastTint;
       case TimePower.rewind:
       case null:
         tint = null;
@@ -158,6 +205,11 @@ class GamePainter extends CustomPainter {
   }
 
   void _drawDrops(Canvas canvas, Color accent) {
+    final fill = Paint()..style = PaintingStyle.fill;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+
     for (final drop in engine.drops) {
       final Color color;
       final IconData icon;
@@ -178,34 +230,30 @@ class GamePainter extends CustomPainter {
       final radius = 15 * engine.scale * pulse;
 
       if (!_saturated) _glowAt(canvas, center, radius * 2.1, color, 0.35);
-      canvas.drawCircle(
-        center,
-        radius,
-        Paint()
-          ..color = color.withValues(alpha: 0.35)
-          ..style = PaintingStyle.fill,
-      );
-      canvas.drawCircle(
-        center,
-        radius,
-        Paint()
-          ..color = color
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
-      );
+      fill.color = color.withValues(alpha: 0.35);
+      canvas.drawCircle(center, radius, fill);
+      stroke.color = color;
+      canvas.drawCircle(center, radius, stroke);
 
-      final painter = TextPainter(
-        text: TextSpan(
-          text: String.fromCharCode(icon.codePoint),
-          style: TextStyle(
-            fontSize: 14 * engine.scale,
-            color: color,
-            fontFamily: icon.fontFamily,
-            package: icon.fontPackage,
+      // The icon painter is laid out once per (icon, fontSize) and cached;
+      // building a TextPainter + layout for every drop every frame was a
+      // measurable source of jank.
+      final fontSize = 14 * engine.scale;
+      final key = '${icon.codePoint}-${fontSize.toStringAsFixed(1)}';
+      final painter = _dropIconCache.putIfAbsent(key, () {
+        return TextPainter(
+          text: TextSpan(
+            text: String.fromCharCode(icon.codePoint),
+            style: TextStyle(
+              fontSize: fontSize,
+              color: color,
+              fontFamily: icon.fontFamily,
+              package: icon.fontPackage,
+            ),
           ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
+          textDirection: TextDirection.ltr,
+        )..layout();
+      });
       painter.paint(canvas, center - Offset(painter.width / 2, painter.height / 2));
     }
   }
@@ -366,6 +414,7 @@ class GamePainter extends CustomPainter {
     final center = Offset(engine.playerX, engine.playerY);
     final radius = engine.playerRadius;
     const gold = KalchakraColors.gold;
+    final shieldR = radius + 12.0;
 
     // Aura.
     _glowAt(canvas, center, radius * 2.6, gold, 0.30);
@@ -388,39 +437,25 @@ class GamePainter extends CustomPainter {
         ..strokeWidth = 3,
     );
 
-    // Inner gold gradient.
-    canvas.drawCircle(
-      center,
-      radius,
-      Paint()
-        ..shader = ui.Gradient.radial(center, radius, <Color>[
-          gold.withValues(alpha: 0.28),
-          gold.withValues(alpha: 0),
-        ]),
-    );
+    // Inner gold gradient: a cached unit shader drawn through a canvas
+    // transform, so no shader is rebuilt per frame.
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.scale(radius, radius);
+    canvas.drawCircle(Offset.zero, 1, _playerSheen);
+    canvas.restore();
 
     final eyeRadius = radius * 0.22;
     canvas.drawCircle(center.translate(-radius * 0.3, -radius * 0.1), eyeRadius, Paint()..color = gold);
     canvas.drawCircle(center.translate(radius * 0.3, -radius * 0.1), eyeRadius, Paint()..color = gold);
 
     if (engine.shieldActive) {
-      canvas.drawCircle(
-        center,
-        radius + 7,
-        Paint()
-          ..color = const Color(0xFF80D8FF)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3,
-      );
-      canvas.drawCircle(
-        center,
-        radius + 7,
-        Paint()
-          ..shader = ui.Gradient.radial(center, radius + 12, <Color>[
-            const Color(0xFF80D8FF).withValues(alpha: 0.30),
-            const Color(0xFF80D8FF).withValues(alpha: 0),
-          ]),
-      );
+      canvas.drawCircle(center, radius + 7, _shieldRing);
+      canvas.save();
+      canvas.translate(center.dx, center.dy);
+      canvas.scale(shieldR, shieldR);
+      canvas.drawCircle(Offset.zero, 1, _shieldSheen);
+      canvas.restore();
     }
 
     // Time power rings.

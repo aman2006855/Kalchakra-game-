@@ -147,9 +147,10 @@ risk/reward option instead of replaying from the beginning.
 20. **Passing a realm froze the game** — every sound effect went through
     `audioplayers`, which re-prepares a media player for every play call; the
     three-note realm chime fired three preparations back to back and stalled
-    the frame. All effects now run through an Android `SoundPool` (`soundpool`):
-    every tone is synthesised and decoded once, and playing it is a single
-    cheap stream start.
+    the frame. The effects now run through a tiny native `SoundPool` channel
+    (`MainActivity.kt`): each synthesised tone is written to a cache file and
+    decoded once on a background thread, and playing it is a single cheap
+    stream start.
 21. **The frame still allocated on every draw** — the backdrop gradient,
     the player's inner sheen, the shield sheen and every drop icon were
     rebuilt per frame (each drop even laid out a fresh `TextPainter`). All of
@@ -168,7 +169,7 @@ risk/reward option instead of replaying from the beginning.
 │   │   ├── engine.dart        # Pure Dart simulation (no Flutter imports)
 │   │   ├── realms.dart        # The nine Lokas + lore text
 │   │   ├── renderer.dart      # CustomPainter for the whole world
-│   │   ├── audio.dart         # Synthesised WAV tones via SoundPool + drone
+│   │   ├── audio.dart         # Synthesised WAV tones via native SoundPool + drone
 │   │   └── storage.dart       # Save data model + shared_preferences store
 │   └── ui/
 │       ├── title_screen.dart     # Animated chakra title

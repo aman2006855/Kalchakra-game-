@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:soundpool/soundpool.dart';
+import 'package:flutter/services.dart';
 
 enum WaveShape { sine, square, saw, triangle }
 
@@ -38,23 +38,22 @@ abstract class AudioService {
   Future<void> dispose();
 }
 
-/// Synthesises short tones as PCM WAV data and plays them through an
-/// Android `SoundPool` (via the `soundpool` package). No audio assets are
-/// needed — every sound is generated — and every buffer is decoded by the
-/// platform exactly once, so firing a sound never re-prepares media.
+/// Synthesises short tones as PCM WAV data and plays them through a native
+/// Android `SoundPool` (see `MainActivity.kt`). No audio assets are needed —
+/// every sound is generated — and each buffer is decoded by the platform
+/// exactly once, so firing a sound never re-prepares media.
 ///
-/// The previous implementation pushed each WAV through `audioplayers`, which
+/// The original implementation pushed each WAV through `audioplayers`, which
 /// re-prepares a `MediaPlayer` for every `play(BytesSource)` call. That
 /// preparation runs on the platform thread and awaiting it stalls the UI —
 /// most visibly when passing a realm, where three tones fire back to back.
 class SynthAudioService implements AudioService {
   SynthAudioService();
 
-  /// Up to 8 overlapping streams so rapid shots never steal each other.
-  final Soundpool _pool = Soundpool.fromOptions(
-    options: const SoundpoolOptions(maxStreams: 8),
-  );
+  static const MethodChannel _channel =
+      MethodChannel('kaalchakra/sound_effects');
 
+  /// sound id per sound key; ids come from the native SoundPool.
   final Map<String, int> _soundIds = <String, int>{};
 
   bool _enabled = true;
@@ -62,6 +61,9 @@ class SynthAudioService implements AudioService {
   bool _droneRunning = false;
   int? _droneSoundId;
   int? _droneStreamId;
+
+  /// The drone loop is generated once for the lifetime of the app.
+  static final Uint8List _droneWav = _droneBuffer();
 
   @override
   bool get enabled => _enabled;
@@ -140,10 +142,10 @@ class SynthAudioService implements AudioService {
     // independently so nothing here can gate the frame that advanced the
     // realm.
     unawaited(_play('realm0', freq: 440, seconds: 0.35, volume: 0.35));
-    unawaited(Future<void>.delayed(const Duration(milliseconds: 160), () =>
-        _play('realm1', freq: 550, seconds: 0.35, volume: 0.35)));
-    unawaited(Future<void>.delayed(const Duration(milliseconds: 320), () =>
-        _play('realm2', freq: 660, seconds: 0.35, volume: 0.35)));
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 160),
+        () => _play('realm1', freq: 550, seconds: 0.35, volume: 0.35)));
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 320),
+        () => _play('realm2', freq: 660, seconds: 0.35, volume: 0.35)));
   }
 
   @override
@@ -161,10 +163,16 @@ class SynthAudioService implements AudioService {
   Future<void> startDrone() async {
     if (!_enabled || _droneRunning) return;
     try {
-      _droneSoundId ??= await _pool.loadUint8List(_droneWav);
-      if (_droneSoundId != null && _droneSoundId! > 0) {
-        await _pool.setVolume(soundId: _droneSoundId, volume: 0.2 * _volume);
-        _droneStreamId = await _pool.play(_droneSoundId!, repeat: -1);
+      if (_droneSoundId == null || _droneSoundId! <= 0) {
+        _droneSoundId = await _loadBytes('drone', _droneWav);
+      }
+      final id = _droneSoundId;
+      if (id != null && id > 0) {
+        _droneStreamId = await _invoke<int>('play', <String, Object?>{
+          'soundId': id,
+          'volume': 0.2 * _volume,
+          'loop': true,
+        });
         _droneRunning = true;
       }
     } catch (_) {
@@ -177,51 +185,34 @@ class SynthAudioService implements AudioService {
     final stream = _droneStreamId;
     if (stream != null) {
       _droneStreamId = null;
-      _pool.stop(stream).catchError((_) {});
+      _invoke<void>('stop', <String, Object?>{'streamId': stream})
+          .catchError((_) {});
     }
   }
 
   @override
-  Future<void> stopDrone() async {
-    _stopDroneStream();
-  }
+  Future<void> stopDrone() async => _stopDroneStream();
 
   @override
   Future<void> dispose() async {
     try {
-      await _pool.release();
+      await _invoke<void>('release', <String, Object?>{});
     } catch (_) {
-      // Already released.
+      // The engine may already be gone.
     }
-    _pool.dispose();
+    _soundIds.clear();
   }
 
-  /// Decodes [bytes] on the platform once and returns its sound id.
-  Future<int> _load(
-    String id, {
-    required double freq,
-    double? endFreq,
-    required double seconds,
-    WaveShape shape = WaveShape.sine,
-    double volume = 0.3,
-  }) async {
-    final key = '$id-$freq-$endFreq-$seconds-${shape.name}';
-    final existing = _soundIds[key];
-    if (existing != null) return existing;
-    final bytes = _tone(
-      freq: freq,
-      endFreq: endFreq,
-      seconds: seconds,
-      shape: shape,
-      volume: volume,
+  Future<T?> _invoke<T>(String method, Map<String, Object?> args) =>
+      _channel.invokeMethod<T>(method, args);
+
+  /// Loads [bytes] as [key] and returns its sound id (0 on failure).
+  Future<int> _loadBytes(String key, Uint8List bytes) async {
+    final id = await _invoke<int>(
+      'load',
+      <String, Object?>{'key': key, 'bytes': bytes},
     );
-    final soundId = await _pool.loadUint8List(bytes);
-    if (soundId > 0) {
-      await _pool.setVolume(soundId: soundId, volume: volume * _volume);
-      _soundIds[key] = soundId;
-    }
-    // A failed decode (soundId <= 0) stays uncached so a later attempt retries.
-    return soundId;
+    return id ?? 0;
   }
 
   Future<void> _play(
@@ -234,24 +225,27 @@ class SynthAudioService implements AudioService {
   }) async {
     if (!_enabled) return;
     try {
-      final soundId = await _load(
-        id,
-        freq: freq,
-        endFreq: endFreq,
-        seconds: seconds,
-        shape: shape,
-        volume: volume,
-      );
+      var soundId = _soundIds[id];
+      if (soundId == null) {
+        soundId = await _loadBytes(id, _tone(
+          freq: freq,
+          endFreq: endFreq,
+          seconds: seconds,
+          shape: shape,
+          volume: volume,
+        ));
+        if (soundId > 0) _soundIds[id] = soundId;
+      }
       if (soundId > 0) {
-        await _pool.play(soundId);
+        await _invoke<void>('play', <String, Object?>{
+          'soundId': soundId,
+          'volume': volume * _volume,
+        });
       }
     } catch (_) {
       // Audio is a nice-to-have; never break gameplay because of it.
     }
   }
-
-  /// The drone loop is generated once for the lifetime of the app.
-  static final Uint8List _droneWav = _droneBuffer();
 
   /// Builds a mono 22.05 kHz 16-bit PCM WAV tone with a soft envelope.
   static Uint8List _tone({
